@@ -63,19 +63,13 @@ say "Installing Remotion (npm)"
 (cd remotion && npx remotion browser ensure) || echo "Could not pre-download Chrome headless shell; Remotion will retry on first render."
 
 mkdir -p jobs layouts
-
-say "Installing the /clip slash command for Claude Code"
-mkdir -p .claude/commands
-cp commands/clip.md .claude/commands/clip.md
-echo "copied commands/clip.md -> .claude/commands/clip.md"
 chmod +x clip.py clip.sh 2>/dev/null || true
 
 say "Done!"
 cat <<'EOF'
 Next steps:
-  1. Make sure Claude Code is installed and logged in with your Pro account:  claude   (then /login)
-     IMPORTANT: unset ANTHROPIC_API_KEY so it uses your subscription, not API billing.
-  2. Clip a stream:   ./clip.sh https://www.twitch.tv/videos/<id>
-     (or step by step: .venv/bin/python clip.py prepare <url>  then  claude "/clip <job>")
-  3. Podcasts with speaker labels: export HF_TOKEN=<free huggingface token> (see README)
+  1. Log in to Claude Code once:   claude    (then type /login)
+  2. Make clips:                    ./clip.sh <video link>
+  Your clips end up in jobs/<name>/out/
+
 EOF
