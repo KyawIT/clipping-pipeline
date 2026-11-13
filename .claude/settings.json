@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python clip.py:*)",
+      "Bash(sleep:*)",
+      "Bash(tail:*)",
+      "Read(jobs/**)",
+      "Read(layouts/**)",
+      "Edit(jobs/**)"
+    ]
+  }
+}

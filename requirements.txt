@@ -1,0 +1,6 @@
+whisperx>=3.3
+yt-dlp>=2025.1.1
+numpy
+pyyaml
+# OpenCV 5 dropped the bundled face detector files, so stay on 4.x
+opencv-python-headless>=4.8,<5

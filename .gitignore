@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+bin/
+jobs/
+remotion/node_modules/
+remotion/public/jobs/
+remotion/out/
+.env

@@ -1,0 +1,49 @@
+# Clipping pipeline configuration
+# Paths are relative to the project root.
+
+jobs_dir: jobs
+layouts_dir: layouts
+
+download:
+  max_height: 1080          # 1080 is plenty for 9:16 output; lower = faster downloads
+  twitch_chat: true         # download Twitch chat replay with TwitchDownloaderCLI
+
+transcribe:
+  model: small           # large-v3 (best) | medium | small (faster, for CPU)
+  device: auto              # auto | cuda | cpu
+  compute_type: auto        # auto -> float16 on cuda, int8 on cpu
+  batch_size: 16            # lower to 4-8 if you run out of GPU memory
+  language: null            # null = auto-detect, or e.g. "en", "de"
+  separate_vocals: false    # run Demucs first (better on loud games, slow on CPU)
+  diarize_podcasts: true    # speaker labels in podcast mode (needs HF_TOKEN env var)
+
+signals:
+  chat_lag_sec: 6           # chat reacts a few seconds after the moment
+  weights:
+    chat_rate: 1.0
+    chat_hype: 1.2          # emote / keyword bursts (KEKW, OMEGALUL, CLIP IT, ...)
+    audio_energy: 0.8
+    speech_rate: 0.3
+  hype_keywords: [KEKW, OMEGALUL, LUL, LMAO, LOL, LMFAO, Pog, PogChamp, POGGERS, PogU,
+                  W, WW, "CLIP IT", CLIP, Clipped, monkaS, monkaW, Sadge, PepeLaugh,
+                  ICANT, "I CANT", HUH, WHAT, NAHH, "NO WAY", "+2", EZ, Kreygasm, "o7"]
+
+candidates:
+  count: 25                 # windows sent to Claude (more = better recall, more usage)
+  min_gap_sec: 75           # minimum distance between candidate peaks
+  before_sec: 60            # context before the peak
+  after_sec: 30             # context after the peak
+
+clips:
+  min_sec: 15
+  max_sec: 90
+  target: 8                 # how many clips Claude should pick per video
+
+render:
+  width: 1080
+  height: 1920
+  fps: 30
+  crf: 18
+  caption_words_per_page: 3
+  hook_seconds: 3.0         # how long the hook text overlay stays on screen
+  split_cam_ratio: 0.38     # share of the vertical frame given to the webcam in "split"
