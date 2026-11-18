@@ -9,6 +9,7 @@
   python clip.py layout-save   <job> --cam x,y,w,h [--game x,y,w,h]  save the streamer's layout preset
   python clip.py validate <job>                                   check clips.json
   python clip.py render   <job> [--only clip_01,clip_03] [--thumbs]  render the 9:16 clips + thumbnails
+  python clip.py web [--port 8765]                                local web app: paste links, progress, library
 """
 from __future__ import annotations
 
@@ -48,7 +49,14 @@ def cmd_status(a):
     jd = job_dir(a.job)
     meta = read_json(jd / "meta.json")
     print(f"job: {a.job}  title: {meta.get('title')}  mode: {meta.get('mode')}  duration: {fmt_ts(meta['duration'])}")
-    for name in ["source.mp4", "audio.wav", "chat.json", "transcript.json", "candidates.md", "clips.json"]:
+    if (jd / "source.mp4").exists():
+        video = "source.mp4 (local copy)"
+    elif (jd / "stream.json").exists():
+        video = "online stream (only frames and clip intervals are fetched)"
+    else:
+        video = "MISSING (run prepare again)"
+    print(f"  video: {video}")
+    for name in ["audio.wav", "chat.json", "transcript.json", "candidates.md", "clips.json"]:
         print(f"  [{'x' if (jd / name).exists() else ' '}] {name}")
     lp = layout_path(meta)
     print(f"  [{'x' if lp.exists() else ' '}] layout preset {lp.name}")
@@ -101,6 +109,19 @@ def cmd_render(a):
     render(job_dir(a.job), a.job, only, thumbs_only=a.thumbs)
 
 
+def cmd_web(a):
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    url = f"http://127.0.0.1:{a.port}"
+    print(f"Clipping web app: {url}   (Ctrl+C to stop)")
+    if not a.no_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    uvicorn.run("web.server:app", host="127.0.0.1", port=a.port, log_level="warning")
+
+
 def cmd_list(_a):
     for p in sorted(jobs_dir().iterdir()):
         if (p / "meta.json").exists():
@@ -108,8 +129,18 @@ def cmd_list(_a):
             print(f"{p.name:40s} {m.get('mode', ''):8s} {fmt_ts(m.get('duration', 0)):>8s}  {m.get('title', '')}")
 
 
+def _utf8_output() -> None:
+    """Titles, transcripts and emoji hooks are UTF-8; the Windows console / pipes default to a legacy code page."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    _utf8_output()
+    ap =argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("prepare"); p.add_argument("source"); p.add_argument("--mode", choices=["stream", "podcast"])
@@ -127,6 +158,9 @@ def main():
     p = sub.add_parser("validate"); p.add_argument("job"); p.set_defaults(fn=cmd_validate)
     p = sub.add_parser("render"); p.add_argument("job"); p.add_argument("--only")
     p.add_argument("--thumbs", action="store_true", help="only (re)render thumbnails"); p.set_defaults(fn=cmd_render)
+    p = sub.add_parser("web", help="local web app (paste links, progress, library)")
+    p.add_argument("--port", type=int, default=8765); p.add_argument("--no-browser", action="store_true")
+    p.set_defaults(fn=cmd_web)
 
     a = ap.parse_args()
     a.fn(a)

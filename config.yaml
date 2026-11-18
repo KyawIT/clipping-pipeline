@@ -5,7 +5,11 @@ jobs_dir: jobs
 layouts_dir: layouts
 
 download:
-  max_height: 1080          # 1080 is plenty for 9:16 output; lower = faster downloads
+  video: sections           # sections = download only the audio first, then just the chosen clip intervals
+                            #            (and single frames) from the online video; full = download the whole video
+  max_height: 1440          # best source quality up to this height. More pixels = sharper webcam crops
+                            # (a cam box is only ~30% of the frame). 2160 is sharper still but slower to process;
+                            # with video: full, lower it to keep downloads small
   twitch_chat: true         # download Twitch chat replay with TwitchDownloaderCLI
 
 transcribe:
@@ -42,8 +46,15 @@ clips:
 render:
   width: 1080
   height: 1920
-  fps: 30
-  crf: 18
+  fps: 30                   # 60 = smoother gameplay (Twitch streams are often 60 fps), ~2x render time
+  crf: 16                   # final x264 quality: lower = better / bigger (14-18 is sensible for uploads)
+  x264_preset: slow         # slower = more quality per MB (veryfast | medium | slow | slower)
+  frame_format: png         # png = lossless frame capture; jpeg = faster, slightly softer
+  panels: true              # crop + upscale webcam / gameplay with ffmpeg (Lanczos + sharpen) instead of in Chrome
+  panel_sharpen: 0.5        # 0 = off, 1 = strong. Only applied to upscaled regions such as a small webcam
+  ai_upscale: auto          # Real-ESRGAN for strongly enlarged regions (the webcam): auto = only with a GPU
+                            # (NVIDIA / Apple), on = also on CPU (slow), off = Lanczos + sharpen only
+  ai_denoise: 0.5           # 0 = keep texture / grain, 1 = strongest cleanup of blocks and noise
   caption_words_per_page: 3
   hook_seconds: 3.0         # how long the hook text overlay stays on screen
   split_cam_ratio: 0.38     # share of the vertical frame given to the webcam in "split"

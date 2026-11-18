@@ -7,19 +7,23 @@ Turn this into short-form clips: $ARGUMENTS
 
 Follow CLAUDE.md ("Picking clips" and "Usage budget"). Steps:
 
+`{py}` below is the venv Python: `.venv/bin/python` on Linux/macOS, `.venv/Scripts/python.exe` on Windows
+(that form works in both Git Bash and PowerShell). Check which one exists once, then use it for every command.
+On Windows, if Bash is not available, poll with `Start-Sleep 60` instead of `sleep 60`.
+
 1. **Resolve the job.**
    - If the argument is an existing folder in `jobs/`, use it.
-   - If it is a URL or file path: run `.venv/bin/python clip.py prepare "<arg>"` in the background
+   - If it is a URL or file path: run `{py} clip.py prepare "<arg>"` in the background
      (it can take a long time) and poll occasionally with `sleep 60` plus a look at the tail of the output.
      Wait until it prints `READY job=...`. Tell the user they can run `prepare` in their own terminal next time
      to save usage.
-   - Run `.venv/bin/python clip.py status <job>` once.
+   - Run `{py} clip.py status <job>` once.
 
 2. **Webcam layout (stream mode only, once per channel).** If `status` shows no layout preset:
-   - Run `.venv/bin/python clip.py layout-detect <job>` and look at the 3 `frames/layout_*.jpg` images
+   - Run `{py} clip.py layout-detect <job>` and look at the 3 `frames/layout_*.jpg` images
      (the cyan grid lines are labeled in % of width/height; the red box is the guess).
    - Decide the real webcam overlay rectangle (the whole cam frame, not just the face) and save it with
-     `.venv/bin/python clip.py layout-save <job> --cam x,y,w,h` (fractions 0-1). Add `--game x,y,w,h` only if
+     `{py} clip.py layout-save <job> --cam x,y,w,h` (fractions 0-1). Add `--game x,y,w,h` only if
      the gameplay does not fill the frame. If there is no webcam at all, save without `--cam`
      and use `fullgame`/`center` layouts only.
    - Look at `frames/layout_saved.jpg` once to confirm.
@@ -28,9 +32,9 @@ Follow CLAUDE.md ("Picking clips" and "Usage budget"). Steps:
    clip criteria in CLAUDE.md.
 
 4. **Refine boundaries** for each one you shortlisted with
-   `.venv/bin/python clip.py words <job> --from <t> --to <t>` (word timestamps to 0.1 s). Start on the hook,
+   `{py} clip.py words <job> --from <t> --to <t>` (word timestamps to 0.1 s). Start on the hook,
    end right after the payoff. Only if the visuals matter (gameplay moment, reaction face), check 1-2 frames with
-   `.venv/bin/python clip.py frames <job> --at t1,t2`.
+   `{py} clip.py frames <job> --at t1,t2`.
 
 5. **Write `jobs/<job>/clips.json`** with the best `clips.target` clips from config.yaml (default 8), ranked:
    ```json
@@ -54,10 +58,10 @@ Follow CLAUDE.md ("Picking clips" and "Usage budget"). Steps:
    layouts: `split` (cam top / gameplay bottom, the default for streams), `fullcam` (big reaction or just chatting),
    `fullgame` (the play itself is the clip; cam bubble), `podcast_follow`, `podcast_stack` (two people), `center`.
 
-6. **Validate** with `.venv/bin/python clip.py validate <job>` and fix anything it reports.
+6. **Validate** with `{py} clip.py validate <job>` and fix anything it reports.
 
 7. **Show the user a short table** (id, time, length, layout, hook, why) and ask whether to render all of them or
    change something. If they already said to just go ahead, skip asking. Then run
-   `.venv/bin/python clip.py render <job>` in the background (it can take minutes per clip) and report where
+   `{py} clip.py render <job>` in the background (it can take minutes per clip) and report where
    the files are: `jobs/<job>/out/` (`clip_XX.mp4`, `clip_XX_thumb.jpg`, `clip_XX.txt`). To redo only the thumbnails,
    run `render <job> --thumbs`.

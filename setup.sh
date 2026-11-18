@@ -63,13 +63,13 @@ say "Installing Remotion (npm)"
 (cd remotion && npx remotion browser ensure) || echo "Could not pre-download Chrome headless shell; Remotion will retry on first render."
 
 mkdir -p jobs layouts
-chmod +x clip.py clip.sh 2>/dev/null || true
+chmod +x clip.py clip.sh web.sh 2>/dev/null || true
 
 say "Done!"
 cat <<'EOF'
 Next steps:
   1. Log in to Claude Code once:   claude    (then type /login)
-  2. Make clips:                    ./clip.sh <video link>
+  2. Make clips:                    ./web.sh   (web app)   or   ./clip.sh <video link>
   Your clips end up in jobs/<name>/out/
 
 EOF

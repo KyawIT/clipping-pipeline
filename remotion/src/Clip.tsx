@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
+import {AbsoluteFill, Audio, interpolate, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {CropView} from './CropView';
 import {Captions} from './Captions';
 import {Hook} from './Hook';
@@ -15,13 +15,27 @@ const verticalBox = (cx: number, sw: number, sh: number, outW: number, outH: num
   return {x, y: 0, w, h: 1};
 };
 
+/**
+ * One region of the layout. With a pre-scaled panel (pipeline/panels.py: ffmpeg crop + Lanczos + sharpen at exactly
+ * this size) it is drawn 1:1; otherwise the source is cropped and scaled here in the browser.
+ * Views are always muted: the sound comes from the single <Audio> in Clip.
+ */
+const View: React.FC<{p: ClipProps; role: string; box: Box; width: number; height: number;
+  style?: React.CSSProperties; videoStyle?: React.CSSProperties}> = ({p, role, box, width, height, style, videoStyle}) => {
+  const pre = p.panels?.[role];
+  const src = pre
+    ? {src: pre.src, sourceWidth: pre.w, sourceHeight: pre.h, box: FULL}
+    : {src: p.src, sourceWidth: p.sourceWidth, sourceHeight: p.sourceHeight, box};
+  return <CropView {...src} width={width} height={height} muted style={style} videoStyle={videoStyle} />;
+};
+
 export const Clip: React.FC<ClipProps> = (p) => {
   const frame = useCurrentFrame();
   const {fps, width: W, height: H} = useVideoConfig();
   const t = frame / fps;
-  const common = {src: p.src, sourceWidth: p.sourceWidth, sourceHeight: p.sourceHeight};
   const cam = p.cam ?? FULL;
   const game = p.game ?? FULL;
+
 
   let body: React.ReactNode;
   let captionY = 0.62; // vertical caption position (fraction of height)
@@ -31,15 +45,15 @@ export const Clip: React.FC<ClipProps> = (p) => {
       const camH = Math.round(H * p.splitCamRatio);
       body = (
         <>
-          <CropView {...common} box={cam} width={W} height={camH} muted />
-          <CropView {...common} box={game} width={W} height={H - camH} muted={false} />
+          <View p={p} role="cam" box={cam} width={W} height={camH} />
+          <View p={p} role="game" box={game} width={W} height={H - camH} />
         </>
       );
       captionY = p.splitCamRatio + 0.06; // just below the seam, on top of the gameplay
       break;
     }
     case 'fullcam': {
-      body = <CropView {...common} box={cam} width={W} height={H} muted={false} />;
+      body = <View p={p} role="cam" box={cam} width={W} height={H} />;
       break;
     }
     case 'fullgame': {
@@ -50,15 +64,16 @@ export const Clip: React.FC<ClipProps> = (p) => {
       body = (
         <>
           <AbsoluteFill>
-            <CropView {...common} box={game} width={W} height={H} muted
+            {/* the blurred backdrop reuses the game panel (if any): blur hides the upscale */}
+            <View p={p} role="game" box={game} width={W} height={H}
               videoStyle={{filter: 'blur(28px) brightness(0.55)', transform: 'scale(1.1)'}} />
           </AbsoluteFill>
           <div style={{position: 'absolute', top: gameTop, left: 0}}>
-            <CropView {...common} box={game} width={W} height={gameH} muted={false} />
+            <View p={p} role="game" box={game} width={W} height={gameH} />
           </div>
           {p.cam ? (
             <div style={{position: 'absolute', top: Math.max(40, gameTop - bubble - 30), left: (W - bubble) / 2}}>
-              <CropView {...common} box={cam} width={bubble} height={bubble} muted
+              <View p={p} role="cam" box={cam} width={bubble} height={bubble}
                 style={{borderRadius: 36, border: '6px solid white', boxShadow: '0 10px 40px rgba(0,0,0,0.5)'}} />
             </div>
           ) : null}
@@ -71,8 +86,8 @@ export const Clip: React.FC<ClipProps> = (p) => {
       const [a, b] = p.stack ?? [FULL, FULL];
       body = (
         <>
-          <CropView {...common} box={a} width={W} height={H / 2} muted={false} />
-          <CropView {...common} box={b} width={W} height={H / 2} muted />
+          <View p={p} role="a" box={a} width={W} height={H / 2} />
+          <View p={p} role="b" box={b} width={W} height={H / 2} />
         </>
       );
       captionY = 0.5;
@@ -85,13 +100,13 @@ export const Clip: React.FC<ClipProps> = (p) => {
         : interpolate(t, keys.map((k) => k.t), keys.map((k) => k.cx), {
             extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
           });
-      body = <CropView {...common} box={verticalBox(cx, p.sourceWidth, p.sourceHeight, W, H)} width={W} height={H} muted={false} />;
+      body = <View p={p} role="main" box={verticalBox(cx, p.sourceWidth, p.sourceHeight, W, H)} width={W} height={H} />;
       captionY = 0.7;
       break;
     }
     case 'center':
     default: {
-      body = <CropView {...common} box={verticalBox(0.5, p.sourceWidth, p.sourceHeight, W, H)} width={W} height={H} muted={false} />;
+      body = <View p={p} role="main" box={verticalBox(0.5, p.sourceWidth, p.sourceHeight, W, H)} width={W} height={H} />;
       captionY = 0.7;
     }
   }
@@ -108,6 +123,7 @@ export const Clip: React.FC<ClipProps> = (p) => {
 
   return (
     <AbsoluteFill style={{backgroundColor: 'black'}}>
+      <Audio src={staticFile(p.src)} />
       <div style={{display: 'flex', flexDirection: 'column', width: W, height: H}}>{body}</div>
       <Captions pages={p.captions} y={captionY} emphasis={p.emphasis} />
       <Hook text={p.hook} seconds={p.hookSeconds} />

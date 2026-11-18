@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .common import CFG, fmt_ts, log, read_json, write_json
+from .common import CFG, fmt_ts, log, progress, read_json, write_json
 
 
 # ---------------------------------------------------------------- raw signals
@@ -142,6 +142,7 @@ def build_candidates(jd: Path) -> Path:
 
     wav = jd / "vocals.wav" if (jd / "vocals.wav").exists() else jd / "audio.wav"
     log("Computing audio energy")
+    progress("score", 10, "Measuring loudness, chat spikes and speech")
     energy = audio_energy(wav, n_sec)
     msgs = load_chat(jd / "chat.json")
     rate, hype = chat_signals(msgs, n_sec)
@@ -185,6 +186,7 @@ def build_candidates(jd: Path) -> Path:
     md = jd / "candidates.md"
     md.write_text(_render_md(meta, tr, cands, has_chat), encoding="utf-8")
     log(f"Wrote {len(cands)} candidates -> {md}")
+    progress("score", 100, f"{len(cands)} hot moments found", candidates=len(cands), has_chat=has_chat)
     return md
 
 

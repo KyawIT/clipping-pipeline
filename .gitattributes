@@ -1,0 +1,6 @@
+# Keep shell scripts runnable after a clone on Windows (Git Bash / WSL need LF),
+# and Windows scripts with CRLF (cmd.exe misreads LF-only batch files).
+*.sh   text eol=lf
+*.py   text eol=lf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf

@@ -4,3 +4,6 @@ numpy
 pyyaml
 # OpenCV 5 dropped the bundled face detector files, so stay on 4.x
 opencv-python-headless>=4.8,<5
+# web app (python clip.py web)
+fastapi>=0.110
+uvicorn>=0.29

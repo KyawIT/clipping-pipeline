@@ -17,14 +17,16 @@ An AI (Claude) watches for the best moments, decides where each clip starts and 
 
 | | |
 |---|---|
-| 💻 **A Linux computer** | Ubuntu or similar (64-bit) |
+| 💻 **A Linux or Windows computer** | Ubuntu or similar (64-bit), or Windows 10/11 (64-bit) |
 | 🎮 **An NVIDIA graphics card** | Recommended, makes it much faster. It also works without one, just slower. |
 | 🤖 **A Claude Pro account** | [claude.ai](https://claude.ai), the normal subscription. No API key needed. |
-| 💾 **Free disk space** | About 10 GB per long stream |
+| 💾 **Free disk space** | About 1-2 GB per long stream (only the audio and the clips are downloaded) |
 
 ---
 
 ## Install (one time)
+
+### Linux
 
 Open a terminal and copy-paste these lines one at a time:
 
@@ -48,9 +50,45 @@ When Claude opens, type `/login`, log in in your browser, then type `/exit`.
 
 > ⚠️ Node.js 18 or newer is needed. If `node -v` shows something older, install a newer one from [nodejs.org](https://nodejs.org).
 
+### Windows
+
+Open **PowerShell** or **Terminal** and copy-paste these lines one at a time:
+
+```powershell
+# 1. Basic tools (then close the window and open a new one, so they are found)
+winget install Gyan.FFmpeg OpenJS.NodeJS.LTS Python.Python.3.12 Git.Git
+
+# 2. Download this tool
+git clone https://github.com/KyawIT/clipping-pipeline.git
+cd clipping-pipeline
+
+# 3. Set everything up (takes 5-15 minutes)
+.\setup.cmd
+
+# 4. Install Claude Code and log in with your Claude account
+npm install -g @anthropic-ai/claude-code
+claude
+```
+
+When Claude opens, type `/login`, log in in your browser, then type `/exit`.
+
+> 💡 With an NVIDIA card, `setup.cmd` installs the GPU version of PyTorch for you (a ~2-3 GB download). Without one, set `model: small` in `config.yaml`.
+
 ---
 
 ## Make clips
+
+### The easy way: the web app
+
+From the `clipping-pipeline` folder, run `.\web.cmd` (Windows) or `./web.sh` (Linux). Your browser opens at `http://127.0.0.1:8765`.
+
+- **New clips:** paste a Twitch, YouTube or Kick link and press *Clip it*. A live dashboard shows every step: the audio download, speech-to-text, a "hype over time" chart of the whole stream, and what Claude is doing right now ("Fine-tuning the cut 1:02:10–1:02:40"). When Claude's picks are ready, untick the clips you don't want and press *Render*. Each clip fills up as it renders and then shows its thumbnail. You can paste more links meanwhile: they queue up.
+- **Library:** all rendered clips, grouped by creator and video. Each clip shows its virality score, a thumbnail (click it to show the file in Explorer, ▶ to play it), and title / description / hashtags with copy buttons. Tick **TikTok / Reels / Shorts** once you've uploaded a clip, then filter by "Not on TikTok yet".
+- **Description link:** set a default link (e.g. your Linktree) under ⚙ Settings. It's added to every description between the text and the hashtags. You can change it per pasted link or per video, or leave it empty for none.
+
+The same video is never added twice: the library knows each video by its YouTube / Twitch / Kick id. The Claude step runs in the background with your normal Claude Code login (Pro plan); log in once with `claude` → `/login`. Everything stays on your computer: the clips in `jobs/`, the library in `jobs/library.db`.
+
+### From the terminal
 
 From the `clipping-pipeline` folder, run:
 
@@ -58,7 +96,9 @@ From the `clipping-pipeline` folder, run:
 ./clip.sh https://www.youtube.com/watch?v=YOUR_VIDEO
 ```
 
-Twitch works the same way: `./clip.sh https://www.twitch.tv/videos/1234567890`
+Twitch and Kick work the same way: `./clip.sh https://www.twitch.tv/videos/1234567890`
+
+On **Windows**, run `.\clip.cmd` and paste the link when it asks. (You can also write `.\clip.cmd "<link>"`. If the link contains `&`, paste it instead: PowerShell breaks those links when it passes them on.)
 
 What happens next:
 
@@ -102,6 +142,8 @@ Then make the clip again:
 
 Not sure what `<video name>` is? Run `.venv/bin/python clip.py list`.
 
+On Windows, use `.venv\Scripts\python clip.py ...` instead of `.venv/bin/python clip.py ...` (here and below).
+
 Or just ask Claude: open `claude` in this folder and say *"change the hook of clip 2 to ... and render it again"*.
 
 ### Layouts
@@ -122,12 +164,14 @@ Or just ask Claude: open `claude` in this folder and say *"change the hook of cl
 | Problem | Fix |
 |---|---|
 | **"command not found"** | Make sure you are inside the `clipping-pipeline` folder (`cd clipping-pipeline`). |
-| **Claude asks to use an API key / bills you** | Run `unset ANTHROPIC_API_KEY` and try again. This tool uses your normal subscription. |
+| **Windows: "ffmpeg / node / python missing" right after installing it** | Close the terminal and open a new one, so Windows picks up the new programs. |
+| **Claude asks to use an API key / bills you** | Run `unset ANTHROPIC_API_KEY` (Windows PowerShell: `Remove-Item Env:ANTHROPIC_API_KEY`) and try again. This tool uses your normal subscription. |
 | **Preparing is very slow** | Normal without an NVIDIA card. Open `config.yaml` and make sure `model: small`. Leave it running overnight. |
-| **Twitch video not found** | Twitch deletes old videos after 7-60 days. Clip soon after the stream. |
+| **Twitch video not found** | Twitch deletes old videos after 7-60 days. Clip soon after the stream. The video stays online until you render, so render before it disappears. |
+| **Rendering fails while "fetching" a clip** | The site blocks partial downloads. Set `download.video: full` in `config.yaml` and run `prepare` again (the transcript is kept). |
 | **The face is cut off in `split`** | The webcam box for that channel is wrong. Ask Claude: *"redo the webcam layout for this channel"*. |
 | **"Out of memory" while preparing** | In `config.yaml`, set `batch_size: 4`. |
-| **Rendering fails to start** | Run `cd remotion && npx remotion browser ensure`, then try again. |
+| **Rendering fails to start** | Inside the `remotion` folder, run `npx remotion browser ensure`, then try again. |
 
 ---
 
@@ -137,12 +181,17 @@ Or just ask Claude: open `claude` in this folder and say *"change the hook of cl
 ### How it works
 
 ```
-Link ─► download video (+ Twitch chat)                          ┐
+Link ─► download only the audio (+ Twitch chat)                 ┐
      ─► speech to text with word timings (WhisperX)             │ on your computer, free
      ─► score moments: chat spikes, emotes, loud voice          ┘
      ─► Claude picks ~8 clips, exact cuts, hooks, thumbnail text   ← your Claude plan
-     ─► cut + render vertical video and thumbnail (Remotion)    ← on your computer
+     ─► download just those clip intervals of the video         ┐ on your computer
+     ─► render vertical video and thumbnail (Remotion)          ┘
 ```
+
+The full video is never downloaded: preparing fetches the audio track (a few % of the size), and rendering fetches only the seconds each clip needs, straight from the online video. Downloaded clip pieces are kept in `jobs/<name>/segments/`, so re-rendering a clip with a new hook costs no download. If a site doesn't allow this, or you want the whole file anyway, set `download.video: full` in `config.yaml`. Local files are used as they are.
+
+> Because the video stays online, render your clips while it is still up (Twitch deletes VODs after 7-60 days).
 
 Claude never reads the full transcript, only about 25 short candidate moments, so one video uses only a handful of prompts' worth of your plan.
 
@@ -157,6 +206,7 @@ clip.py layout-detect <job>                         guess the webcam box
 clip.py layout-save   <job> --cam x,y,w,h           save the webcam box for that channel (fractions 0-1)
 clip.py validate <job>                              check clips.json
 clip.py render   <job> [--only clip_01] [--thumbs]  make the videos and thumbnails
+clip.py web [--port 8765]                           the web app
 ```
 
 Run each with `.venv/bin/python clip.py ...`. Preparing several videos overnight and clipping them later saves Claude usage:
@@ -170,14 +220,16 @@ claude "/clip <job name>"
 ### Settings (`config.yaml`)
 
 - `transcribe.model`: `large-v3` (best, needs a GPU), `medium`, or `small` (fast, for CPU)
-- `transcribe.separate_vocals: true`: cleaner speech-to-text on loud games/music (install with `./setup.sh --demucs`, slow without a GPU)
+- `transcribe.separate_vocals: true`: cleaner speech-to-text on loud games/music (install with `./setup.sh --demucs`, or `.\setup.cmd -Demucs` on Windows; slow without a GPU)
 - `signals.hype_keywords`: add your streamer's own emotes
 - `clips.target`: how many clips per video (default 8)
 - `render.hook_seconds`, `caption_words_per_page`, `split_cam_ratio`: look and timing
+- Quality: the webcam and gameplay regions are cropped and upscaled by ffmpeg (Lanczos, noise cleanup, sharpening) before Remotion places them, so a small webcam isn't blown up blurry in the browser. `render.panel_sharpen` sets how strong the sharpening is, `render.crf` / `x264_preset` / `frame_format` the final encode, `render.fps: 60` gives smoother gameplay, and `download.max_height` how sharp the source is (2160 = sharpest webcam if the video exists in 4K). Faster but softer: `frame_format: jpeg`, `x264_preset: medium`.
+- AI upscaling: with an NVIDIA (or Apple) GPU, strongly enlarged regions, usually the webcam, are upscaled with [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) first. That gives real detail instead of a smooth blur. It uses the PyTorch that is already installed; the ~10 MB of model weights download on first use into `models/`. `render.ai_upscale: off` turns it off, `on` forces it on a CPU too (slow). `render.ai_denoise` (0-1) sets how hard it cleans compression blocks and noise.
 
 ### Speaker labels for podcasts (optional)
 
-Get a free token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens), accept the terms of `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`, then `export HF_TOKEN=hf_...` before preparing.
+Get a free token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens), accept the terms of `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`, then `export HF_TOKEN=hf_...` (Windows PowerShell: `$env:HF_TOKEN="hf_..."`) before preparing.
 
 ### Changing the look
 
@@ -195,6 +247,6 @@ Claude Code asks before running commands. `.claude/settings.json` already allows
 
 This project is released under the [MIT License](LICENSE).
 
-It builds on: yt-dlp (Unlicense), TwitchDownloader (MIT), WhisperX (BSD-2), OpenCV (Apache-2), Montserrat font (SIL OFL, bundled). **Remotion** has its own license: free for individuals and companies of up to 3 people, larger companies need a license from [remotion.dev/license](https://remotion.dev/license).
+It builds on: yt-dlp (Unlicense), TwitchDownloader (MIT), WhisperX (BSD-2), OpenCV (Apache-2), Real-ESRGAN (BSD-3, model weights downloaded on first use), Montserrat font (SIL OFL, bundled). **Remotion** has its own license: free for individuals and companies of up to 3 people, larger companies need a license from [remotion.dev/license](https://remotion.dev/license).
 
 **Only clip videos you own or have permission to use.**

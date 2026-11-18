@@ -9,3 +9,4 @@ remotion/out/
 .env
 logs/
 *.log
+models/

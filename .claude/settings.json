@@ -2,6 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(.venv/bin/python clip.py:*)",
+      "Bash(.venv/Scripts/python clip.py:*)",
+      "Bash(.venv/Scripts/python.exe clip.py:*)",
+      "PowerShell(.venv\\Scripts\\python.exe clip.py:*)",
+      "PowerShell(.venv/Scripts/python.exe clip.py:*)",
+      "PowerShell(Start-Sleep:*)",
       "Bash(sleep:*)",
       "Bash(tail:*)",
       "Read(jobs/**)",

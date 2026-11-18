@@ -11,9 +11,28 @@ choosing moments, setting exact cut points, writing hooks and titles. The main e
 - `pipeline/`: download (yt-dlp + TwitchDownloaderCLI), transcribe (WhisperX), signals (local scoring),
   vision (frames, webcam detection, face tracking), render (cut + Remotion)
 - `remotion/`: React compositions (`src/Clip.tsx` layouts, `Captions.tsx`, `Hook.tsx`)
-- `jobs/<job>/`: source.mp4, audio.wav, chat.json, transcript.json, candidates.md, clips.json, out/
+- `web/`: local web app (`clip.py web`, FastAPI + plain JS in `web/static/`). `runner.py` runs the same CLI stages
+  as subprocesses and reads `@@{json}` progress lines (`pipeline.common.progress`, only printed when
+  `CLIP_PROGRESS=1`) plus yt-dlp / WhisperX / Remotion output. The Claude step is headless
+  `claude -p "/clip <job> ..." --output-format stream-json` with steps 1-6 only; the user reviews in the browser and
+  the web app renders. `db.py` keeps the library in `jobs/library.db` (videos unique by platform + video id,
+  per-platform upload checkmarks). If you add a pipeline stage, emit `progress()` events for it.
+  The frontend's look and motion follow the `apple-design` skill (`.claude/skills/apple-design`): system type with
+  size-specific tracking, translucent chrome, one accent colour (blue = action/selection), spring easing tokens
+  (`--spring`), press feedback, reduced motion / transparency / contrast. Keep new UI consistent with it.
+- `pipeline/panels.py`: ffmpeg pre-crops and upscales each layout region (cam, game, main...) to its exact on-screen
+  size, so Remotion draws it 1:1 instead of upscaling in Chrome. Its geometry mirrors `Clip.tsx` / `CropView.tsx`:
+  change a layout in both places. Small regions enlarged 1.4x or more (the webcam, <= 0.4 MP) go through Real-ESRGAN first
+  (`pipeline/upscale.py`, GPU only unless `render.ai_upscale: on`).
+- `jobs/<job>/`: audio.wav, chat.json, transcript.json, candidates.md, clips.json, out/, plus either
+  `stream.json` (online video, the default: `download.video: sections`) or `source.mp4` (local files / `full`).
+  `pipeline/media.py` hides the difference: frames and clip intervals (`segments/`, cached) are fetched from
+  the stream only when needed, so every `frames` / `layout-detect` call is a small network fetch.
 - `layouts/<platform>_<channel>.json`: saved webcam presets, reused for every stream of that channel
-- Always use the venv: `.venv/bin/python clip.py ...`
+- Always use the venv: `.venv/bin/python clip.py ...` (Linux/macOS) or `.venv/Scripts/python.exe clip.py ...` (Windows)
+- Setup / one-shot launchers: `setup.sh` + `clip.sh` (Linux), `setup.cmd` + `clip.cmd` (Windows, wrapping the `.ps1` files).
+  Keep the `.ps1` files ASCII-only (PowerShell 5.1 reads them in the ANSI code page) and start external
+  tools from Python with argument lists, never through a shell.
 
 ## Usage budget (Claude Pro plan, keep this tight)
 - Never read `transcript.json`, `chat.json` or `signals.json` directly: they are huge. Use `candidates.md`

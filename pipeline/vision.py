@@ -1,11 +1,12 @@
 """Frames for Claude to look at, webcam-layout detection (streams) and face tracking (podcasts)."""
 from __future__ import annotations
 
-import subprocess
+import re
 from pathlib import Path
 
 import numpy as np
 
+from . import media
 from .common import fmt_ts, layouts_dir, log, read_json, write_json
 
 _CASCADE = None
@@ -25,15 +26,10 @@ def _detector():
 
 
 def grab_frame(src: Path, t: float, width: int | None = None) -> np.ndarray:
-    """Decode a single frame at time t (seconds) as BGR ndarray."""
-    vf = ["-vf", f"scale={width}:-2"] if width else []
-    proc = subprocess.run(
-        ["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", str(src), "-frames:v", "1", *vf,
-         "-f", "image2pipe", "-vcodec", "png", "-"],
-        check=True, capture_output=True,
-    )
+    """Decode a single frame at time t (seconds) as BGR ndarray.
+    `src` is a job folder (its source.mp4 or online stream) or a video file."""
     cv2 = _cv2()
-    img = cv2.imdecode(np.frombuffer(proc.stdout, np.uint8), cv2.IMREAD_COLOR)
+    img = cv2.imdecode(np.frombuffer(media.frame_png(src, t, width), np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise RuntimeError(f"could not decode frame at {t}s")
     return img
@@ -78,7 +74,7 @@ def extract_frames(jd: Path, times: list[float], grid: bool = False, width: int 
     out_dir.mkdir(exist_ok=True)
     paths = []
     for t in times:
-        img = grab_frame(jd / "source.mp4", t, width)
+        img = grab_frame(jd, t, width)
         if grid:
             img = draw_grid(img)
         p = out_dir / f"f_{int(t*10):07d}{'_grid' if grid else ''}.jpg"
@@ -92,7 +88,8 @@ def extract_frames(jd: Path, times: list[float], grid: bool = False, width: int 
 # ------------------------------------------------------------------ stream webcam layout
 
 def layout_key(meta: dict) -> str:
-    return f"{meta.get('platform', 'local')}_{meta.get('channel', 'unknown')}".replace("/", "_").replace(" ", "_")
+    # also drop characters Windows does not allow in file names (\ : * ? " < > |)
+    return re.sub(r'[\\/:*?"<>| ]', "_", f"{meta.get('platform', 'local')}_{meta.get('channel', 'unknown')}")
 
 
 def layout_path(meta: dict) -> Path:
@@ -108,7 +105,7 @@ def detect_layout(jd: Path) -> dict:
     found = []
     for t in times:
         try:
-            faces = detect_faces(grab_frame(jd / "source.mp4", t, 960))
+            faces = detect_faces(grab_frame(jd, t, 960))
         except Exception:
             continue
         if faces:
@@ -138,7 +135,7 @@ def detect_layout(jd: Path) -> dict:
     out_dir.mkdir(exist_ok=True)
     boxes = {"cam": proposal["cam"]} if proposal["cam"] else {}
     for i, t in enumerate([times[3], times[8], times[13]]):
-        img = draw_grid(grab_frame(jd / "source.mp4", t, 960), boxes)
+        img = draw_grid(grab_frame(jd, t, 960), boxes)
         p = out_dir / f"layout_{i}.jpg"
         cv2.imwrite(str(p), img, [cv2.IMWRITE_JPEG_QUALITY, 80])
         print(p)
@@ -158,7 +155,7 @@ def save_layout(jd: Path, cam: list[float] | None, game: list[float] | None) -> 
     # draw for a final visual check
     cv2 = _cv2()
     dur = float(meta["duration"])
-    img = draw_grid(grab_frame(jd / "source.mp4", dur * 0.4, 960),
+    img = draw_grid(grab_frame(jd, dur * 0.4, 960),
                     {k: v for k, v in {"cam": data["cam"], "game": data["game"]}.items() if v})
     check = jd / "frames" / "layout_saved.jpg"
     check.parent.mkdir(exist_ok=True)
