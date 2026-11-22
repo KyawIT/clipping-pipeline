@@ -220,12 +220,55 @@ class DB:
     def set_video_link(self, video_pk: int, link: Optional[str]) -> None:
         self.x("UPDATE videos SET desc_link=? WHERE pk=?", (link, video_pk))
 
+    # ------------------------------------------------------------ deleting
+    def video(self, video_pk: int) -> Optional[sqlite3.Row]:
+        rows = self.q("SELECT * FROM videos WHERE pk=?", (video_pk,))
+        return rows[0] if rows else None
+
+    def clip(self, clip_pk: int) -> Optional[sqlite3.Row]:
+        rows = self.q("""SELECT c.*, v.job_id, v.platform, v.video_id AS vid FROM clips c
+                         JOIN videos v ON v.pk = c.video_pk WHERE c.pk=?""", (clip_pk,))
+        return rows[0] if rows else None
+
+    def delete_clip_row(self, clip_pk: int) -> None:
+        self.x("DELETE FROM clips WHERE pk=?", (clip_pk,))
+
+    def delete_video(self, video_pk: int) -> None:
+        self.x("DELETE FROM videos WHERE pk=?", (video_pk,))  # clips + uploads cascade
+
+    def runs_for(self, job_id: Optional[str], platform: Optional[str], video_id: Optional[str]) -> list[sqlite3.Row]:
+        vid = norm_video_id(platform or "", video_id or "") if video_id else None
+        return [r for r in self.q("SELECT * FROM runs")
+                if (job_id and r["job_id"] == job_id)
+                or (vid and r["platform"] == platform and norm_video_id(platform, r["video_id"] or "") == vid)]
+
+    def delete_run(self, run_pk: int) -> None:
+        self.x("DELETE FROM runs WHERE pk=?", (run_pk,))
+
     # ------------------------------------------------------------ runs
     def create_run(self, url: str, extra_prompt: str, desc_link: Optional[str],
                    platform: Optional[str], video_id: Optional[str]) -> int:
+        # Run ids are never reused. SQLite hands a deleted run's id (max + 1) to the next insert, and the runner
+        # keeps deleted ids in its cancelled set to skip their stale queued tasks, so a reused id was silently
+        # skipped forever (stuck at "Queued", 0%). It would also append to the deleted run's log file.
         now = time.time()
-        return self.x("""INSERT INTO runs(url, platform, video_id, status, extra_prompt, desc_link, created_at, updated_at)
-                         VALUES(?,?,?,?,?,?,?,?)""", (url, platform, video_id, "queued", extra_prompt, desc_link, now, now))
+        with self.lock:
+            floor = int(self.setting("last_run_pk", "0") or 0)
+            logs = jobs_dir() / "_web_logs"
+            if logs.is_dir():
+                for f in logs.glob("run_*.log"):
+                    if f.stem[4:].isdigit():
+                        floor = max(floor, int(f.stem[4:]))
+            top = self.conn.execute("SELECT COALESCE(MAX(pk), 0) FROM runs").fetchone()[0]
+            pk = max(floor, top) + 1
+            self.conn.execute(
+                """INSERT INTO runs(pk, url, platform, video_id, status, extra_prompt, desc_link, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (pk, url, platform, video_id, "queued", extra_prompt, desc_link, now, now))
+            self.conn.execute("INSERT INTO settings(key, value) VALUES('last_run_pk', ?) "
+                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(pk),))
+            self.conn.commit()
+            return pk
 
     def update_run(self, pk: int, **fields: Any) -> None:
         if not fields:
@@ -245,4 +288,5 @@ class DB:
         return self.q("SELECT * FROM runs ORDER BY pk DESC LIMIT ?", (limit,))
 
     def mark_interrupted(self) -> None:
-        self.x("UPDATE runs SET status='interrupted' WHERE status IN ('queued', 'running', 'queued_render', 'rendering')")
+        self.x("UPDATE runs SET status='interrupted' "
+               "WHERE status IN ('queued', 'running', 'queued_render', 'rendering', 'live')")

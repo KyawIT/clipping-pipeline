@@ -43,6 +43,23 @@ clips:
   max_sec: 90
   target: 8                 # how many clips Claude should pick per video
 
+live:                       # live streams (paste a live link in the web app, or: clip.py live <url>)
+  video: record             # default of the switcher: record = keep the video locally (reliable, ~1.4 GB/h at 720p)
+                            # audio = sound only (~70 MB/h); clip pictures come from the VOD later
+  quality: 720p             # 1080p | 720p | 480p (record mode). Lower = less bandwidth and disk
+  segment_sec: 300          # recording is split into files of this length
+  chunk_min: 10             # transcribe + rescore every N minutes of new recording
+  pick_every_min: 45        # Claude pick round over the newest stretch (uses your Pro plan)
+  hot_trigger: true         # extra round ~3 min after a big chat / voice spike
+  hot_z: 3.0                # how big a spike has to be
+  min_pick_gap_min: 15      # never two rounds closer than this
+  clips_per_round: 3        # at most this many new clips per round
+  round_candidates: 10      # candidate moments Claude sees per round
+  game_mode: true           # default: below-normal priority, CPU transcription, renders wait for the stream to end
+  transcribe_device: cpu    # WhisperX device while game mode is on (keeps the GPU free for the game)
+  cpu_threads: 4            # CPU threads WhisperX may use while game mode is on
+  reconnect_min: 10         # how long a dropped stream may stay offline before the recording ends
+
 render:
   width: 1080
   height: 1920

@@ -9,6 +9,7 @@ Model and weights: Real-ESRGAN by Xintao Wang et al., BSD-3-Clause, https://gith
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import urllib.request
 from functools import lru_cache
@@ -35,7 +36,8 @@ def _torch():
 
 def device() -> str | None:
     """'cuda' / 'mps' / 'cpu' when AI upscaling should run, None when it is off (config: render.ai_upscale)."""
-    mode = str(CFG["render"].get("ai_upscale", "auto")).lower()
+    # CLIP_AI_UPSCALE overrides config.yaml: the web app sets "off" for renders while game mode is on
+    mode = str(os.environ.get("CLIP_AI_UPSCALE") or CFG["render"].get("ai_upscale", "auto")).lower()
     if mode in ("off", "false", "0", "no"):
         return None
     try:

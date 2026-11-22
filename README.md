@@ -85,6 +85,18 @@ From the `clipping-pipeline` folder, run `.\web.cmd` (Windows) or `./web.sh` (Li
 - **New clips:** paste a Twitch, YouTube or Kick link and press *Clip it*. A live dashboard shows every step: the audio download, speech-to-text, a "hype over time" chart of the whole stream, and what Claude is doing right now ("Fine-tuning the cut 1:02:10–1:02:40"). When Claude's picks are ready, untick the clips you don't want and press *Render*. Each clip fills up as it renders and then shows its thumbnail. You can paste more links meanwhile: they queue up.
 - **Library:** all rendered clips, grouped by creator and video. Each clip shows its virality score, a thumbnail (click it to show the file in Explorer, ▶ to play it), and title / description / hashtags with copy buttons. Tick **TikTok / Reels / Shorts** once you've uploaded a clip, then filter by "Not on TikTok yet".
 - **Description link:** set a default link (e.g. your Linktree) under ⚙ Settings. It's added to every description between the text and the hashtags. You can change it per pasted link or per video, or leave it empty for none.
+- **Deleting:** the 🗑 button on a clip deletes its video, thumbnail and text. Under each video in the Library, *Free Up Space* deletes the downloaded audio, cached pieces and recordings but keeps the finished clips, and *Delete Video* removes the whole folder. A run page has *Delete* too, which also cleans up runs that never got to the Library. Deleting is permanent: the dialog shows what goes and how much space that frees.
+
+### Live streams
+
+Paste the link of a stream that is **live right now** (Twitch, YouTube or Kick). Instead of an error you get live options:
+
+- **Video source:** *Record Locally* (default) saves the stream in 5-minute files while it runs. This is the most reliable option and works even if the streamer has VODs turned off; 720p uses about 3 Mbps and 1.4 GB per hour. *Audio Only* records just the sound (about 0.16 Mbps, 70 MB per hour), and the picture for each clip is fetched from the VOD afterwards. Twitch VODs need to be enabled for that; YouTube and Kick VODs exist only after the stream ends. You can switch between the two, and change the quality (1080p / 720p / 480p), at any time while it runs.
+- **Game mode** (default on) is for gaming on the same PC: everything runs at below-normal priority, speech-to-text runs on the CPU so the GPU stays free, and clips you approve wait to render until the stream ends. *Render Now* starts them anyway.
+
+While the stream runs, the app transcribes the new audio every 10 minutes and keeps the hype chart up to date. About every 45 minutes, and a few minutes after a big chat or voice spike, Claude looks at **only the new stretch** and suggests up to 3 clips, which you keep or skip right there. *Pick Now* asks for a round straight away. When the stream ends (or you press *Stop Recording*), a final round covers the last stretch. When everything is rendered, *Delete Recording, Keep Clips* gets the disk space back. The timings are under `live:` in `config.yaml`.
+
+From the terminal: `clip.py live <link>` records and transcribes until the stream ends (Ctrl+C stops it), and `/clip <job>` picks clips from it at any time.
 
 The same video is never added twice: the library knows each video by its YouTube / Twitch / Kick id. The Claude step runs in the background with your normal Claude Code login (Pro plan); log in once with `claude` → `/login`. Everything stays on your computer: the clips in `jobs/`, the library in `jobs/library.db`.
 
@@ -206,6 +218,9 @@ clip.py layout-detect <job>                         guess the webcam box
 clip.py layout-save   <job> --cam x,y,w,h           save the webcam box for that channel (fractions 0-1)
 clip.py validate <job>                              check clips.json
 clip.py render   <job> [--only clip_01] [--thumbs]  make the videos and thumbnails
+clip.py live <url|job> [--audio] [--quality 720p]   record + transcribe a live stream while it runs
+clip.py candidates <job> --from 1:00:00 [--to ..]   candidate moments of one time window only
+clip.py delete <job> [--clip clip_03] [--keep-clips] [--yes]   delete a clip, the working files, or the job
 clip.py web [--port 8765]                           the web app
 ```
 

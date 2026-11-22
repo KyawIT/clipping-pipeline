@@ -57,6 +57,11 @@ const P = {
   youtube: '<rect x="3" y="6" width="18" height="12" rx="4"/><path d="M10.5 9.5l4 2.5-4 2.5z"/>',
   kick: '<path d="M6.5 4.5v15M17 4.5L9.5 12l7.5 7.5"/>',
   file: '<path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4"/>',
+  trash: '<path d="M4.5 7h15M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2M6.5 7l.8 12a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8l.8-12"/>',
+  disk: '<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="M3.5 13.5h17M7 16h.01"/>',
+  rec: '<circle cx="12" cy="12" r="5"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/>',
+  gamepad: '<path d="M7 8.5h10a4 4 0 0 1 3.9 4.8l-.7 3.4a2 2 0 0 1-3.4 1L14.5 15h-5l-2.3 2.7a2 2 0 0 1-3.4-1l-.7-3.4A4 4 0 0 1 7 8.5z"/><path d="M8 11v3M6.5 12.5h3M15.5 12h.01M17.5 13.5h.01"/>',
 };
 const icon = (name, cls = "i") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ""}</svg>`;
 const PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 4.8v14.4L19 12z"/></svg>';
@@ -80,6 +85,56 @@ const fmtTs = (sec) => {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
 };
+const fmtBytes = (n) => {
+  n = n || 0;
+  if (n < 1024 * 1024) return `${Math.max(0, Math.round(n / 1024))} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(n < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+  return `${(n / 1024 ** 3).toFixed(1)} GB`;
+};
+
+/** Apple-style alert sheet for permanent deletes. Resolves true when the destructive button was pressed. */
+function confirmDelete({ title, body = "", items = [], action = "Delete" }) {
+  const dlg = $("#confirm");
+  $("#confirmTitle", dlg).textContent = title;
+  $(".confirm-body", dlg).textContent = body;
+  $(".confirm-list", dlg).innerHTML = items.map(([k, v]) => `<li><span>${esc(k)}</span><b>${esc(v)}</b></li>`).join("");
+  $("#confirmOk", dlg).textContent = action;
+  dlg.returnValue = "";
+  dlg.showModal();
+  requestAnimationFrame(() => dlg.classList.add("open"));
+  $(".confirm-sheet", dlg).animate(reducedMotion() ? [{ opacity: 0 }, { opacity: 1 }]
+    : [{ opacity: 0, transform: "scale(1.08)" }, { opacity: 1, transform: "none" }],
+    { duration: reducedMotion() ? 150 : 420, easing: SPRING() });
+  return new Promise((resolve) => {
+    dlg.addEventListener("close", () => { dlg.classList.remove("open"); resolve(dlg.returnValue === "ok"); }, { once: true });
+  });
+}
+(() => {
+  const dlg = $("#confirm");
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close("cancel"); });
+})();
+
+/** Collapse a deleted card / video away, then remove it. */
+async function collapseAway(el) {
+  if (!el) return;
+  if (!reducedMotion()) {
+    el.style.overflow = "hidden";
+    const anim = el.animate([{ height: `${el.offsetHeight}px`, opacity: 1, transform: "none" },
+      { height: "0px", opacity: 0, transform: "scale(.96)", marginTop: "0px", marginBottom: "0px", paddingTop: "0px", paddingBottom: "0px" }],
+      { duration: 420, easing: SPRING(), fill: "forwards" });
+    await Promise.race([anim.finished.catch(() => {}), new Promise((r) => setTimeout(r, 500))]);
+  }
+  el.remove();
+}
+
+function deletedToast(res, what) {
+  if (res.failed && res.failed.length) {
+    toast(`Some files are in use and were kept: ${res.failed.slice(0, 3).join(", ")}${res.failed.length > 3 ? "…" : ""}`, true);
+  } else {
+    toast(`${what} deleted · ${fmtBytes(res.freed)} freed`);
+  }
+}
+
 const fmtDur = (sec) => {
   sec = Math.max(0, Math.round(sec || 0));
   if (sec < 60) return `${sec}s`;
@@ -102,8 +157,39 @@ const detectPlatform = (url) =>
 const STATUS_LABEL = {
   queued: "Queued", running: "In progress", review: "Ready for review", queued_render: "Render queued",
   rendering: "Rendering", done: "Done", error: "Failed", cancelled: "Cancelled", interrupted: "Interrupted",
+  live: "Live",
 };
-const ACTIVE = ["queued", "running", "queued_render", "rendering"];
+const ACTIVE = ["queued", "running", "queued_render", "rendering", "live"];
+const QUALITIES = ["1080p", "720p", "480p"];
+
+/** Segmented control markup + behaviour (sliding pill). options: [[value, label], ...] */
+const segHtml = (id, options, value, label) => `<div class="seg" id="${id}" role="radiogroup" aria-label="${esc(label)}"><span class="thumb-pill"></span>
+  ${options.map(([v, l]) => `<button type="button" role="radio" data-v="${esc(v)}" class="${v === value ? "on" : ""}" aria-checked="${v === value}">${esc(l)}</button>`).join("")}</div>`;
+function wireSeg(seg, onChange) {
+  const place = (animate) => {
+    const on = $("button.on", seg) || $("button", seg);
+    const pill = $(".thumb-pill", seg);
+    if (!on || !pill) return;
+    if (!animate) pill.style.transition = "none";
+    pill.style.left = `${on.offsetLeft}px`;
+    pill.style.width = `${on.offsetWidth}px`;
+    if (!animate) { pill.offsetWidth; pill.style.transition = ""; }
+  };
+  requestAnimationFrame(() => place(false));
+  seg.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-v]");
+    if (!b || b.classList.contains("on") || seg.classList.contains("disabled")) return;
+    $$("button", seg).forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", x === b); });
+    place(true);
+    onChange(b.dataset.v);
+  });
+  return place;
+}
+const estText = (est, audio, quality) => {
+  const mbps = audio ? est.audio : est[quality];
+  const gbh = (mbps * 3600) / 8 / 1000;
+  return `≈ ${mbps < 1 ? mbps.toFixed(2) : mbps.toFixed(1)} Mbps · ${gbh < 1 ? Math.round(gbh * 1000) + " MB" : gbh.toFixed(1) + " GB"} per hour`;
+};
 const STAGES = [
   ["download", "Audio", "download"], ["transcribe", "Transcript", "wave"], ["score", "Moments", "chart"],
   ["pick", "Claude", "sparkles"], ["review", "Review", "eye"], ["render", "Render", "film"],
@@ -199,7 +285,7 @@ async function viewNew() {
         <input id="url" name="url" placeholder="Paste a video link" aria-label="Video link" required autofocus>
         <button class="btn primary" id="go" type="submit">Clip It</button>
       </form>
-      <div class="works">Twitch VODs · YouTube · Kick VODs · or a video file path</div>
+      <div class="works">Twitch and Kick, live or VODs · YouTube · or a video file path</div>
       <details class="disclosure" id="opts">
         <summary>Options ${icon("chevron")}</summary>
         <div class="surface options">
@@ -260,13 +346,51 @@ function renderRunsList(runs) {
     : `<div class="empty">Clips you make show up here.</div>`;
 }
 
-async function submitRun(force) {
+function showLiveOffer(offer) {
+  const d = offer.defaults;
+  const opts = { audio: !!d.audio, quality: d.quality, game_mode: !!d.game_mode };
+  $("#formMsg").innerHTML = `<section class="surface live-offer">
+      <div class="lo-head"><span class="rec-dot" aria-hidden="true"></span><span class="t-eyebrow">Live now</span>${capsule(offer.platform)}</div>
+      <div class="lo-title">${esc(offer.title || "Live stream")}</div>
+      <div class="lo-sub">${esc(offer.channel || "")}</div>
+      <div class="lo-grid">
+        <span class="label">Video source</span>
+        ${segHtml("loSrc", [["record", "Record Locally"], ["audio", "Audio Only"]], opts.audio ? "audio" : "record", "Video source")}
+        <span class="label" id="loQLabel">Quality</span>
+        ${segHtml("loQ", QUALITIES.map((q) => [q, q]), opts.quality, "Recording quality")}
+      </div>
+      <div class="lo-est" id="loEst"></div>
+      <div class="hint" id="loSrcHint"></div>
+      <label class="include lo-game"><span>${icon("gamepad")} Game mode<small>Below-normal priority, CPU transcription, renders wait until the stream ends</small></span>
+        <span class="switch"><input type="checkbox" role="switch" id="loGame" ${opts.game_mode ? "checked" : ""}><span></span></span></label>
+      <p class="lo-how">Claude picks clips about every ${Math.round(offer.pick_every_min)} minutes and shortly after big chat or voice spikes. You review them while the stream is still running.</p>
+      <button class="btn primary large" type="button" id="loStart">Start Live Clipping</button>
+    </section>`;
+  const refresh = () => {
+    $("#loEst").textContent = estText(offer.est, opts.audio, opts.quality);
+    $("#loQ").classList.toggle("disabled", opts.audio);
+    $("#loQLabel").classList.toggle("tertiary", opts.audio);
+    $("#loSrcHint").textContent = opts.audio
+      ? "Lowest bandwidth. The picture for each clip is fetched from the VOD later (Twitch needs VODs enabled; YouTube and Kick: after the stream ends)."
+      : "Most reliable: works even if the streamer has VODs off. Delete the recording after rendering to get the space back.";
+  };
+  wireSeg($("#loSrc"), (v) => { opts.audio = v === "audio"; refresh(); });
+  wireSeg($("#loQ"), (v) => { opts.quality = v; refresh(); });
+  $("#loGame").addEventListener("change", (e) => { opts.game_mode = e.target.checked; });
+  refresh();
+  $("#loStart").addEventListener("click", () => submitRun(false, opts));
+}
+
+async function submitRun(force, live = null) {
   const btn = $("#go");
   const url = $("#url").value.trim();
   if (!url) return;
   const defLink = overviewCache ? overviewCache.settings.desc_link : "";
   const linkVal = $("#link").value.trim();
   const body = { url, extra_prompt: $("#extra").value, desc_link: linkVal === defLink ? null : linkVal, force };
+  if (live) body.live = live;
+  const startBtn = $("#loStart");
+  if (startBtn) { startBtn.disabled = true; startBtn.textContent = "Starting…"; }
   btn.disabled = true;
   btn.textContent = "Checking…";
   $("#formMsg").innerHTML = "";
@@ -278,6 +402,7 @@ async function submitRun(force) {
       location.hash = `#/run/${res.run || res.attach}`;
       return;
     }
+    if (res.live_offer) { showLiveOffer(res.live_offer); return; }
     if (res.duplicate) {
       const d = res.duplicate;
       $("#formMsg").innerHTML = `<div class="banner info dup">${icon("info")}<span><b>Already clipped.</b> ${esc(d.title)} by ${esc(d.channel)} has ${d.clips} clip${d.clips === 1 ? "" : "s"}.
@@ -288,7 +413,12 @@ async function submitRun(force) {
       $("#dupAgain").addEventListener("click", () => submitRun(true));
     }
   } catch (e) {
-    $("#formMsg").innerHTML = `<div class="banner err">${icon("warn")}<span>${esc(e.message)}</span></div>`;
+    if (live && $("#loStart")) {
+      toast(e.message, true);
+      $("#loStart").disabled = false; $("#loStart").textContent = "Start Live Clipping";
+    } else {
+      $("#formMsg").innerHTML = `<div class="banner err">${icon("warn")}<span>${esc(e.message)}</span></div>`;
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = "Clip It";
@@ -305,6 +435,7 @@ function viewRun(id) {
       <div class="run-actions" id="ractions"></div></div>
     <div id="rerror"></div>
     <div class="surface stepper" id="rail"></div>
+    <section class="surface live-ctl" id="liveCtl" hidden></section>
     <div class="mc">
       <div class="stack">
         <section class="surface now" id="now"></section>
@@ -319,7 +450,109 @@ function viewRun(id) {
   const es = new EventSource(`/api/runs/${id}/events`);
   es.onmessage = (ev) => { st = JSON.parse(ev.data); update(); };
   es.onerror = () => { if (st && !ACTIVE.includes(st.status)) es.close(); };
-  const tick = setInterval(() => { if (st) { renderRail(); renderNow(); } }, 1000);
+  const tick = setInterval(() => { if (st) { if (st.live) renderLiveNow(); else { renderRail(); renderNow(); } } }, 1000);
+  let heatRev = -1, liveCtlKey = "", clipsKey = "";
+  const seenNew = new Set();
+
+  // ---------------------------------------------------------------- live runs
+  const heldCount = () => (st.clips || []).filter((c) => (c.render || {}).step === "held").length;
+  const newCount = () => (st.clips || []).filter((c) => c.new).length;
+  const liveStat = (k, v, sub) => `<div class="ls"><div class="k">${k}</div><div class="v num">${v}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>`;
+
+  function liveMsg() {
+    const lv = st.live, n = newCount();
+    if (lv.picking) return "Claude is picking moments from the newest stretch of the stream.";
+    if (n) return `${n} new clip${n === 1 ? "" : "s"} to review below. Keep the ones you like.`;
+    if (lv.ended) return st.status === "done" ? "The stream is over and every approved clip is in your Library." : "The stream is over. Finishing the last picks and renders.";
+    if (st.status !== "live") return "The recorder stopped. Press Resume to continue the same recording.";
+    if (lv.offline) return "The stream dropped. Waiting for it to come back before giving up.";
+    if (lv.step === "transcribing") return lv.msg || "Transcribing the newest minutes.";
+    if (lv.step === "finishing") return "Stopping: processing the last minutes of the recording.";
+    return "Recording and transcribing as the stream runs. Clips show up below after each pick round.";
+  }
+
+  function renderLiveNow() {
+    const lv = st.live;
+    const recOn = lv.recording && !lv.ended && st.status === "live";
+    const behind = Math.max(0, (lv.recorded || 0) - (lv.processed || 0));
+    const nextIn = Math.max(0, (lv.next_round_at || 0) - Date.now() / 1000);
+    const finishing = !lv.recording && lv.recorded > 0 && (lv.step === "finishing" || lv.step === "transcribing");
+    const state = lv.ended ? "Stream ended" : st.status !== "live" ? STATUS_LABEL[st.status] : lv.offline ? "Stream offline"
+      : recOn ? (lv.audio ? "Recording audio only" : `Recording · ${lv.quality}`) : finishing ? "Finishing" : "Connecting";
+    const kbps = lv.kbps ? (lv.kbps >= 1000 ? `${(lv.kbps / 1000).toFixed(1)} Mbps` : `${lv.kbps} kbps`) : "–";
+    const nr = lv.rounds.length;
+    $("#now").innerHTML = `<div class="live-face ${recOn ? "on" : ""}"><span class="rec-dot big" aria-hidden="true"></span>
+        <div class="live-time num">${fmtTs(lv.recorded)}</div><div class="t-cap secondary">recorded</div></div>
+      <div><div class="t-eyebrow eyebrow ${recOn ? "live-eyebrow" : ""}">${esc(state)}</div><p class="msg">${esc(liveMsg())}</p>
+        <div class="live-stats">
+          ${liveStat("Transcribed", fmtTs(lv.processed), behind > 90 ? `${fmtDur(behind)} behind` : "Up to date")}
+          ${liveStat("On disk", fmtBytes(lv.disk), lv.audio ? "Audio only" : "")}
+          ${liveStat("Bandwidth", recOn ? kbps : "–", "")}
+          ${liveStat("Chat", lv.chat_per_min ? `${lv.chat_per_min}/min` : "–", lv.chat ? `${lv.chat} messages` : "")}
+          ${liveStat("Next pick", lv.ended ? "–" : (lv.round_pending || lv.picking) ? "Now" : fmtDur(nextIn), `${nr} round${nr === 1 ? "" : "s"} so far`)}
+        </div></div>`;
+    const n = newCount();
+    document.title = n ? `${n} new · ${lv.ended ? "Review" : "Live"} · Clipper` : recOn ? `● ${fmtTs(lv.recorded)} · Live · Clipper` : `${state} · Clipper`;
+  }
+
+  function renderLiveCtl() {
+    const lv = st.live, el = $("#liveCtl");
+    const running = st.status === "live" && !lv.ended;
+    const held = heldCount();
+    const key = JSON.stringify([lv.audio, lv.quality, lv.game_mode, lv.ended, running, held, !!(lv.round_pending || lv.picking), st.status]);
+    if (key === liveCtlKey) return;
+    liveCtlKey = key;
+    el.hidden = false;
+    if (lv.ended || !running) {
+      const done = st.status === "done";
+      const rendered = (st.clips || []).filter((c) => (c.render || {}).step === "done").length;
+      el.innerHTML = `<div class="lc-ended">${icon(lv.ended ? "check" : "info")}<span>${lv.ended
+          ? `Stream over · ${lv.rounds.length} pick round${lv.rounds.length === 1 ? "" : "s"} · ${rendered} clip${rendered === 1 ? "" : "s"} rendered`
+          : "The recorder isn't running."}</span>
+        ${done ? `<button class="btn small danger" id="lcFree">${icon("trash")} Delete Recording, Keep Clips</button>` : ""}
+        ${held ? `<button class="btn small" id="lcRender">${icon("film")} Render ${held} Now</button>` : ""}</div>`;
+      const f = $("#lcFree");
+      if (f) f.onclick = async () => {
+        let u = { working: 0, archive: 0, clips: 0 };
+        try { u = await api("GET", `/api/runs/${id}/usage`); } catch (e) { /* optional */ }
+        const ok = await confirmDelete({ title: "Delete the recording?",
+          body: "Removes the recorded stream, audio and cached intervals of this live run. Your rendered clips stay, but they can't be re-rendered afterwards.",
+          items: [["Recording and working files", fmtBytes(u.working + u.archive)], ["Kept: clips", fmtBytes(u.clips)]],
+          action: `Free ${fmtBytes(u.working + u.archive)}` });
+        if (!ok) return;
+        try { const r = await api("POST", `/api/runs/${id}/free-space`); deletedToast(r, "Recording"); f.remove(); } catch (e) { toast(e.message, true); }
+      };
+    } else {
+      el.innerHTML = `<div class="lc-row">
+          <span class="label">Video source</span>${segHtml("lcSrc", [["record", "Record Locally"], ["audio", "Audio Only"]], lv.audio ? "audio" : "record", "Video source")}
+          <span class="label ${lv.audio ? "tertiary" : ""}">Quality</span>${segHtml("lcQ", QUALITIES.map((q) => [q, q]), lv.quality, "Recording quality")}
+          <span class="lo-est">${esc(estText(lv.est, lv.audio, lv.quality))}</span></div>
+        <div class="lc-row">
+          <label class="include lo-game"><span>${icon("gamepad")} Game mode<small>${lv.game_mode ? "Low priority · renders wait for the stream to end" : "Full speed · renders start right after you approve"}</small></span>
+            <span class="switch"><input type="checkbox" role="switch" id="lcGame" ${lv.game_mode ? "checked" : ""}><span></span></span></label>
+          <div class="run-actions">
+            <button class="btn" id="lcPick" ${lv.round_pending || lv.picking ? "disabled" : ""}>${icon("sparkles")} ${lv.round_pending || lv.picking ? "Picking…" : "Pick Now"}</button>
+            ${held ? `<button class="btn" id="lcRender">${icon("film")} Render ${held} Now</button>` : ""}
+            <button class="btn danger" id="lcStop">${icon("stop")} Stop Recording</button></div></div>`;
+      $("#lcQ").classList.toggle("disabled", lv.audio);
+      const send = async (changes, note) => {
+        try { await api("POST", `/api/runs/${id}/live`, changes); if (note) toast(note); } catch (e) { toast(e.message, true); liveCtlKey = ""; }
+      };
+      wireSeg($("#lcSrc"), (v) => send({ audio: v === "audio" }, v === "audio" ? "Switching to audio only (a few seconds of gap)" : "Switching to video recording"));
+      wireSeg($("#lcQ"), (v) => send({ quality: v }, `Switching to ${v}`));
+      $("#lcGame").addEventListener("change", (e) => send({ game_mode: e.target.checked }, e.target.checked ? "Game mode on" : "Game mode off: held clips start rendering"));
+      $("#lcPick").onclick = async (e) => {
+        e.currentTarget.disabled = true;
+        try { await api("POST", `/api/runs/${id}/pick-now`); } catch (err) { toast(err.message, true); e.currentTarget.disabled = false; }
+      };
+      $("#lcStop").onclick = async () => {
+        if (!confirm("Stop recording? The last minutes are processed and Claude does one final pick round.")) return;
+        try { await api("POST", `/api/runs/${id}/stop`); toast("Stopping the recording"); } catch (err) { toast(err.message, true); }
+      };
+    }
+    const rn = $("#lcRender");
+    if (rn) rn.onclick = async () => { try { await api("POST", `/api/runs/${id}/render-now`); toast("Rendering now"); } catch (e) { toast(e.message, true); } };
+  }
 
   const eta = (sd) => {
     if (sd.state !== "active" || !sd.started) return "";
@@ -333,11 +566,28 @@ function viewRun(id) {
     $("#rmeta").innerHTML = [capsule(v.platform), v.channel ? `<span>${esc(v.channel)}</span>` : "",
       v.duration ? `<span>${fmtTs(v.duration)}</span>` : "", statusCapsule(st.status)].filter(Boolean).join("<span class='tertiary'>·</span>");
     const acts = [];
-    if (ACTIVE.includes(st.status)) acts.push(`<button class="btn" id="bCancel">${icon("x")} Cancel</button>`);
+    if (ACTIVE.includes(st.status) && st.status !== "live") acts.push(`<button class="btn" id="bCancel">${icon("x")} Cancel</button>`);
     if (["error", "interrupted", "cancelled"].includes(st.status)) acts.push(`<button class="btn primary" id="bResume">${icon("resume")} Resume</button>`);
     if (st.status === "done") acts.push(`<a class="btn primary" href="#/library">Open Library</a>`);
+    if (!ACTIVE.includes(st.status)) acts.push(`<button class="btn danger" id="bDelete">${icon("trash")} Delete</button>`);
     $("#ractions").innerHTML = acts.join("");
-    const c = $("#bCancel"), r = $("#bResume");
+    const c = $("#bCancel"), r = $("#bResume"), d = $("#bDelete");
+    if (d) d.onclick = async () => {
+      let u = { total: 0, clips: 0 };
+      try { u = await api("GET", `/api/runs/${id}/usage`); } catch (e) { /* sizes are optional */ }
+      const ok = await confirmDelete({
+        title: "Delete this run?",
+        body: `Deletes “${(st.video && st.video.title) || st.url}” from this PC: its job folder, any of its clips in the Library, and this run's history.`,
+        items: u.total ? [["Clips", fmtBytes(u.clips)], ["Everything else", fmtBytes(u.total - u.clips)], ["Total", fmtBytes(u.total)]] : [],
+        action: "Delete Run",
+      });
+      if (!ok) return;
+      try {
+        const res = await api("DELETE", `/api/runs/${id}`);
+        deletedToast(res, "Run");
+        if (!res.failed.length) location.hash = "#/new";
+      } catch (e) { toast(e.message, true); }
+    };
     if (c) c.onclick = async () => { if (confirm("Stop this run?")) await api("POST", `/api/runs/${id}/cancel`).catch((e) => toast(e.message, true)); };
     if (r) r.onclick = async () => { await api("POST", `/api/runs/${id}/resume`).catch((e) => toast(e.message, true)); };
     $("#rerror").innerHTML = (st.error ? `<div class="banner err">${icon("warn")}<span>${esc(st.error)}</span></div>` : "")
@@ -416,6 +666,10 @@ function viewRun(id) {
 
   async function renderHeat() {
     if (!st.heat) return;
+    if (st.live && (st.heat_rev || 0) !== heatRev && !heatLoading) {  // the live heat map grows every chunk
+      heatRev = st.heat_rev || 0;
+      heat = null;
+    }
     if (!heat && !heatLoading) {
       heatLoading = true;
       try { heat = await api("GET", `/api/runs/${id}/heat`); } catch (e) { heatLoading = false; return; }
@@ -428,8 +682,11 @@ function viewRun(id) {
       const h = Math.max(1.5, v * H);
       svg += `<rect class="hb" x="${(i * bw).toFixed(2)}" y="${(H - h).toFixed(2)}" width="${Math.max(0.6, bw - 0.8).toFixed(2)}" height="${h.toFixed(2)}" rx="1" opacity="${(0.1 + 0.42 * v).toFixed(2)}"/>`;
     });
+    ((st.live && st.live.rounds) || []).forEach((r) => {
+      svg += `<line class="round-mark" x1="${x(r.to).toFixed(1)}" x2="${x(r.to).toFixed(1)}" y1="0" y2="${H}"><title>${esc(`Pick round ${r.n} (${fmtTs(r.from)}–${fmtTs(r.to)})`)}</title></line>`;
+    });
     (st.clips || []).forEach((c) => {
-      const off = st.status === "review" ? !selection.has(c.id) : c.selected === false;
+      const off = (st.status === "review" || c.new) ? !selection.has(c.id) : c.selected === false;
       svg += `<rect class="pick ${off ? "off" : ""}" x="${x(c.start).toFixed(1)}" y="0" width="${Math.max(3, x(c.end) - x(c.start)).toFixed(1)}" height="${H}" rx="3"><title>${esc(c.id + ": " + (c.hook || "").replace(/\*/g, ""))}</title></rect>`;
     });
     (st.candidates || []).forEach((c) => {
@@ -456,71 +713,120 @@ function viewRun(id) {
     const sec = $("#clipsSec");
     const clips = st.clips || [];
     if (!clips.length) { sec.innerHTML = ""; return; }
-    const review = st.status === "review";
-    const drafting = st.stages.pick.state === "active";
-    const cards = clips.map((c) => {
-      const sel = review ? selection.has(c.id) : c.selected !== false;
+    const live = !!st.live;
+    // which cards get a switch: every clip in a normal review, only the new ones of a live run
+    const isRev = (c) => live ? !!c.new : st.status === "review";
+    const revClips = clips.filter(isRev);
+    const anyRev = revClips.length > 0;
+    const selCount = () => revClips.filter((c) => selection.has(c.id)).length;
+    const holdNote = live && st.live.game_mode && !st.live.ended && !st.live.render_now;
+    const drafting = !live && st.stages.pick.state === "active";
+    const card = (c) => {
+      const rev = isRev(c);
+      const sel = rev ? selection.has(c.id) : c.selected !== false;
       const r = c.render;
       let foot = "";
-      if (review) {
-        foot = `<label class="include"><span>Render this clip</span><span class="switch"><input type="checkbox" role="switch" data-sel="${esc(c.id)}" ${sel ? "checked" : ""}><span></span></span></label>`;
+      if (rev) {
+        foot = `<label class="include"><span>${live ? "Keep this clip" : "Render this clip"}</span><span class="switch"><input type="checkbox" role="switch" data-sel="${esc(c.id)}" ${sel ? "checked" : ""}><span></span></span></label>`;
       } else if (r && r.step === "done") {
         foot = `<div class="ready">${c.pk ? `<img src="/media/clips/${c.pk}/thumb" alt="">` : ""}<div><div class="t-headline" style="color:var(--green)">Ready</div><a href="#/library">View in Library ${icon("chevron")}</a></div></div>`;
+      } else if (r && r.step === "held") {
+        foot = `<span class="t-foot secondary held">${icon("gamepad")} ${esc(r.msg || "Renders when the stream ends")}</span>`;
       } else if (r) {
         foot = `<div class="prog"><i style="width:${r.pct}%"></i></div><div class="prog-meta"><span>${esc(r.msg || r.step)}</span><span>${Math.round(r.pct)}%</span></div>`;
-      } else if (c.selected === false && st.stages.review.state === "done") {
+      } else if (c.selected === false && (live || st.stages.review.state === "done")) {
         foot = `<span class="t-foot tertiary">Skipped</span>`;
       }
-      return `<article class="pick ${sel ? "sel" : "unsel"} ${drafting ? "draft" : ""}">
+      return `<article class="pick ${sel ? "sel" : "unsel"} ${drafting ? "draft" : ""} ${rev && live ? "fresh-pick" : ""}">
         <div class="pick-top"><span>${esc(c.id.replace("_", " "))} · ${fmtTs(c.start)} · ${c.duration}s</span>${scoreBadge(c.score, c.reason)}</div>
         <div class="hook">${hookHtml(c.hook)}</div>
         ${c.title ? `<div class="title">${esc(c.title)}</div>` : ""}
         ${c.reason ? `<div class="why">${esc(c.reason)}</div>` : ""}
         ${(c.hashtags || []).length ? `<div class="tags">${esc(c.hashtags.join(" "))}</div>` : ""}
         <div class="pick-foot">${foot}</div></article>`;
-    }).join("");
-    const title = review ? "Choose what to render" : drafting ? "Claude is drafting…" : "Clips";
-    sec.innerHTML = `<div class="clips-head"><h2 class="t-title">${title}</h2>
-        ${review ? `<div class="run-actions"><button class="btn small" id="selAll">Select All</button><button class="btn small" id="selNone">Select None</button></div>` : ""}</div>
-      <div class="picks">${cards}</div>
-      ${review ? `<div class="float-bar"><span><b class="num">${selection.size}</b> of ${clips.length} selected</span>
-        <button class="btn primary large" id="bRender" ${selection.size ? "" : "disabled"}>Render ${selection.size} Clip${selection.size === 1 ? "" : "s"}</button></div>` : ""}`;
-    if (review) {
-      $$("[data-sel]", sec).forEach((cb) => cb.addEventListener("change", () => {
-        cb.checked ? selection.add(cb.dataset.sel) : selection.delete(cb.dataset.sel);
-        // update in place so the switch keeps its own spring animation
-        const card = cb.closest(".pick");
-        card.classList.toggle("sel", cb.checked); card.classList.toggle("unsel", !cb.checked);
-        $(".float-bar b", sec).textContent = selection.size;
-        const btn = $("#bRender");
-        btn.disabled = !selection.size;
-        btn.textContent = `Render ${selection.size} Clip${selection.size === 1 ? "" : "s"}`;
-        renderHeat();
-      }));
-      $("#selAll").onclick = () => { clips.forEach((c) => selection.add(c.id)); renderClips(); renderHeat(); };
-      $("#selNone").onclick = () => { selection.clear(); renderClips(); renderHeat(); };
-      $("#bRender").onclick = async (e) => {
-        e.currentTarget.disabled = true;
-        try { await api("POST", `/api/runs/${id}/render`, { clip_ids: [...selection] }); }
-        catch (err) { toast(err.message, true); e.currentTarget.disabled = false; }
-      };
+    };
+    let body;
+    if (live) {  // newest round first, each with its own header
+      const rounds = new Map();
+      clips.forEach((c) => { const k = c.round || 0; if (!rounds.has(k)) rounds.set(k, []); rounds.get(k).push(c); });
+      body = [...rounds.keys()].sort((a, b) => b - a).map((k) => {
+        const info = (st.live.rounds || []).find((r) => r.n === k);
+        const why = info ? { hot: "after a hot moment", manual: "requested", final: "final round", timer: "" }[info.reason] || "" : "";
+        const head = info ? `Round ${k} · ${fmtTs(info.from)}–${fmtTs(info.to)}${why ? ` · ${why}` : ""}` : "Clips";
+        return `<div class="round-head t-foot secondary">${esc(head)}</div><div class="picks">${rounds.get(k).map(card).join("")}</div>`;
+      }).join("");
+    } else {
+      body = `<div class="picks">${clips.map(card).join("")}</div>`;
     }
+    const title = live ? (anyRev ? "New clips to review" : "Live clips") : st.status === "review" ? "Choose what to render" : drafting ? "Claude is drafting…" : "Clips";
+    const verb = (n) => live && holdNote ? `Keep ${n} Clip${n === 1 ? "" : "s"}` : `Render ${n} Clip${n === 1 ? "" : "s"}`;
+    const n0 = selCount();
+    sec.innerHTML = `<div class="clips-head"><h2 class="t-title">${title}</h2>
+        ${anyRev ? `<div class="run-actions"><button class="btn small" id="selAll">Select All</button><button class="btn small" id="selNone">Select None</button></div>` : ""}</div>
+      ${body}
+      ${anyRev ? `<div class="float-bar"><span><b class="num">${n0}</b> of ${revClips.length} selected${holdNote ? " · renders after the stream" : ""}</span>
+        <button class="btn primary large" id="bRender" ${n0 || live ? "" : "disabled"}>${live && !n0 ? "Skip All" : verb(n0)}</button></div>` : ""}`;
+    if (!anyRev) return;
+    const syncBar = () => {
+      const n = selCount();
+      $(".float-bar b", sec).textContent = n;
+      const btn = $("#bRender");
+      btn.disabled = !n && !live;
+      btn.textContent = live && !n ? "Skip All" : verb(n);
+    };
+    $$("[data-sel]", sec).forEach((cb) => cb.addEventListener("change", () => {
+      cb.checked ? selection.add(cb.dataset.sel) : selection.delete(cb.dataset.sel);
+      // update in place so the switch keeps its own spring animation
+      const el = cb.closest(".pick");
+      el.classList.toggle("sel", cb.checked); el.classList.toggle("unsel", !cb.checked);
+      syncBar();
+      renderHeat();
+    }));
+    $("#selAll").onclick = () => { revClips.forEach((c) => selection.add(c.id)); clipsKey = ""; renderClips(); renderHeat(); };
+    $("#selNone").onclick = () => { revClips.forEach((c) => selection.delete(c.id)); clipsKey = ""; renderClips(); renderHeat(); };
+    $("#bRender").onclick = async (e) => {
+      e.currentTarget.disabled = true;
+      const ids = revClips.filter((c) => selection.has(c.id)).map((c) => c.id);
+      try { await api("POST", `/api/runs/${id}/render`, { clip_ids: ids }); }
+      catch (err) { toast(err.message, true); e.currentTarget.disabled = false; }
+    };
   }
 
   function update() {
-    if (st.status === "review" && !selectionInit && (st.clips || []).length) {
+    if (st.status === "review" && !st.live && !selectionInit && (st.clips || []).length) {
       st.clips.forEach((c) => { if (c.selected !== false) selection.add(c.id); });
       selectionInit = true;
     }
-    const reviewing = st.status === "review" && lastStatus === "review";
-    renderHead(); renderRail(); renderNow(); renderFeed(); renderHeat();
-    if (!reviewing) renderClips();   // during review the cards are only changed in place (no re-render under the pointer)
+    if (st.live) {
+      (st.clips || []).forEach((c) => {
+        if (c.new && !seenNew.has(c.id)) { seenNew.add(c.id); if (c.selected !== false) selection.add(c.id); }
+      });
+    }
+    renderHead(); renderFeed(); renderHeat();
+    $("#rail").hidden = !!st.live;
+    if (st.live) {
+      renderLiveNow(); renderLiveCtl();
+      // re-render the cards only when something visible changed (never under the pointer for a switch flip)
+      const key = JSON.stringify([st.status, st.live.game_mode, st.live.ended, (st.clips || []).map((c) =>
+        [c.id, !!c.new, c.selected, c.pk, c.render && c.render.step, c.render && Math.round(c.render.pct / 4)])]);
+      if (key !== clipsKey) { clipsKey = key; renderClips(); }
+    } else {
+      $("#liveCtl").hidden = true;
+      renderRail(); renderNow();
+      const reviewing = st.status === "review" && lastStatus === "review";
+      if (!reviewing) renderClips();   // during review the cards are only changed in place (no re-render under the pointer)
+    }
     $("#logPre").textContent = (st.log || []).join("\n");
     if (lastStatus && lastStatus !== st.status) {
       if (st.status === "review") notify("Clips ready for review", st.video ? st.video.title : "");
       if (st.status === "done") notify("Clips rendered", st.video ? st.video.title : "");
       if (st.status === "error") notify("Clipping failed", st.error || "");
       refreshOverview();
+    }
+    if (st.live) {
+      const n = newCount();
+      if (n > (update._lastNew || 0)) notify(`${n} new live clip${n === 1 ? "" : "s"} to review`, st.video ? st.video.title : "");
+      update._lastNew = n;
     }
     lastStatus = st.status;
   }
@@ -612,7 +918,8 @@ function viewLibrary() {
         ${c.reason ? `<div class="why">${esc(c.reason)}</div>` : ""}
         <div class="posts" role="group" aria-label="Posted to">${UP.map(([k, label]) => `<button class="post ${k} ${c.uploads[k] ? "on" : ""}" data-up="${k}"
             aria-pressed="${!!c.uploads[k]}" title="${c.uploads[k] ? "Posted " + new Date(c.uploads[k] * 1000).toLocaleString() : "Mark as posted to " + label}">
-            <span class="ck">${icon("check")}</span>${label}</button>`).join("")}</div>
+            <span class="ck">${icon("check")}</span>${label}</button>`).join("")}
+          <button class="icon-btn del" data-act="delete" aria-label="Delete ${esc(c.clip_id)}" title="Delete clip">${icon("trash")}</button></div>
       </div></article>`;
   }
 
@@ -645,6 +952,9 @@ function viewLibrary() {
               <button class="btn small" data-linksave="${v.pk}">Save</button>
               ${v.desc_link !== null ? `<button class="btn small plain" data-linkreset="${v.pk}">Use Default</button>` : `<span class="tertiary">${data.default_link ? "Default" : ""}</span>`}
             </div>
+            <div class="storage-row" data-storage="${v.pk}">${icon("disk")}<span class="sz grow">On disk: …</span>
+              <button class="btn small plain" data-free="${v.pk}">Free Up Space</button>
+              <button class="btn small danger" data-delvideo="${v.pk}">Delete Video</button></div>
             <div class="clips-grid">${clips.map((c) => clipCard(c, v)).join("")}</div>
           </div></details>`;
       }).join("");
@@ -657,10 +967,30 @@ function viewLibrary() {
       <div class="v">${value}${total && label !== "Clips" ? `<small> / ${total}</small>` : ""}</div></div>`;
     $("#stats").innerHTML = stat("Clips", total, "grid", "blue") + stat("TikTok", upCount.tiktok, "check", "teal")
       + stat("Reels", upCount.reels, "check", "pink") + stat("Shorts", upCount.shorts, "check", "red");
+    setTimeout(() => $$("details.video[open]").forEach((d) => updateStorage(parseInt(d.dataset.video, 10))), 0);
     $("#lib").innerHTML = html || `<div class="list"><div class="empty">${total
       ? "No clips match these filters."
       : `No clips yet. <a href="#/new">Clip a stream</a> to fill your Library.`}</div></div>`;
   }
+
+  function findVideo(pk) {
+    for (const cr of data.creators) for (const v of cr.videos) if (v.pk === pk) return v;
+    return null;
+  }
+
+  async function updateStorage(vpk) {
+    const row = $(`[data-storage="${vpk}"] .sz`);
+    if (!row) return;
+    try {
+      const u = await api("GET", `/api/videos/${vpk}/usage`);
+      row.textContent = `On disk: ${fmtBytes(u.total)} · clips ${fmtBytes(u.clips)} · working files ${fmtBytes(u.working + u.archive)}`;
+    } catch (e) { row.textContent = "On disk: unknown"; }
+  }
+  // sizes are measured lazily, only for videos that are open
+  $("#lib").addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (d.matches && d.matches("details.video") && d.open) updateStorage(parseInt(d.dataset.video, 10));
+  }, true);
 
   function findClip(pk) {
     for (const cr of data.creators) for (const v of cr.videos) for (const c of v.clips) if (c.pk === pk) return { c, v };
@@ -679,6 +1009,43 @@ function viewLibrary() {
       const value = linkReset ? null : $(`[data-link="${pk}"]`).value.trim();
       try { await api("PUT", `/api/videos/${pk}`, { desc_link: value }); toast(linkReset ? "Using your default link" : "Link saved"); load(); }
       catch (err) { toast(err.message, true); }
+      return;
+    }
+    const freeBtn = e.target.closest("[data-free]");
+    const delVid = e.target.closest("[data-delvideo]");
+    if (freeBtn || delVid) {
+      const vpk = parseInt(freeBtn ? freeBtn.dataset.free : delVid.dataset.delvideo, 10);
+      const v = findVideo(vpk);
+      if (!v) return;
+      let u;
+      try { u = await api("GET", `/api/videos/${vpk}/usage`); } catch (err) { toast(err.message, true); return; }
+      const n = v.clips.length, nClips = `${n} clip${n === 1 ? "" : "s"}`;
+      if (freeBtn) {
+        const ok = await confirmDelete({
+          title: "Free up space?",
+          body: `Deletes the working files of “${v.title}”: downloaded audio, cached intervals, recordings and old archives. The ${nClips} stay. `
+            + (u.rerender_after_free ? "Re-rendering later fetches the clips from the stream again." : "These clips can't be re-rendered afterwards."),
+          items: [["Working files", fmtBytes(u.working)], ["Archive", fmtBytes(u.archive)], ["Kept: clips", fmtBytes(u.clips)]],
+          action: `Free ${fmtBytes(u.working + u.archive)}`,
+        });
+        if (!ok) return;
+        try { const r = await api("POST", `/api/videos/${vpk}/free-space`); deletedToast(r, "Working files"); updateStorage(vpk); }
+        catch (err) { toast(err.message, true); }
+        return;
+      }
+      const ok = await confirmDelete({
+        title: "Delete this video?",
+        body: `“${v.title}” and its whole folder: all ${nClips}, thumbnails, upload checkmarks and working files.`,
+        items: [["Clips", fmtBytes(u.clips)], ["Working files", fmtBytes(u.working)], ["Archive and other", fmtBytes(u.archive + u.other)], ["Total", fmtBytes(u.total)]],
+        action: "Delete Video",
+      });
+      if (!ok) return;
+      try {
+        const r = await api("DELETE", `/api/videos/${vpk}`);
+        deletedToast(r, "Video");
+        if (!r.failed.length) await collapseAway($(`[data-video="${vpk}"]`));
+        load();
+      } catch (err) { toast(err.message, true); }
       return;
     }
     if (!card) return;
@@ -713,6 +1080,21 @@ function viewLibrary() {
     if (act && act.dataset.act === "play") {
       e.stopPropagation();
       openPlayer(pk, act.closest(".thumb"));
+      return;
+    }
+    if (act && act.dataset.act === "delete") {
+      const ok = await confirmDelete({
+        title: `Delete ${c.clip_id}?`,
+        body: `${c.title ? `“${c.title}”. ` : ""}Removes the video, thumbnail, caption text and its cached interval from this PC.`,
+        action: "Delete Clip",
+      });
+      if (!ok) return;
+      try {
+        const r = await api("DELETE", `/api/clips/${pk}`);
+        deletedToast(r, c.clip_id);
+        if (!r.failed.length) await collapseAway(card);
+        load();
+      } catch (err) { toast(err.message, true); }
       return;
     }
     if (act && act.dataset.act === "reveal") {

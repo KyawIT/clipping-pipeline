@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -161,3 +162,65 @@ def parse_ts(value: str | float | int) -> float:
 
 def env_flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes"}
+
+
+# ------------------------------------------------------------------ sharing the PC (live clipping while gaming)
+
+BELOW_NORMAL = 0x00004000  # Windows BELOW_NORMAL_PRIORITY_CLASS
+
+
+def low_priority_kwargs() -> dict[str, Any]:
+    """Popen kwargs that start a process at below-normal CPU priority, so a game in the foreground keeps the CPU."""
+    if IS_WINDOWS:
+        return {"creationflags": BELOW_NORMAL}
+    return {"preexec_fn": lambda: os.nice(10)}
+
+
+def lower_own_priority(low: bool = True) -> None:
+    """Below-normal (or back to normal) priority for this process; the children it starts inherit it.
+    Outside Windows the priority can only be lowered, never raised again."""
+    try:
+        if IS_WINDOWS:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL if low else 0x00000020)
+        elif low and os.nice(0) < 10:
+            os.nice(10 - os.nice(0))
+    except Exception:
+        pass
+
+
+@contextmanager
+def gpu_lock(enabled: bool = True):
+    """Cross-process lock around GPU-heavy work (WhisperX, Real-ESRGAN), so two of them never run at once and
+    run the card out of memory. A no-op when `enabled` is False (CPU work)."""
+    if not enabled:
+        yield
+        return
+    f = open(jobs_dir() / ".gpu.lock", "a+b")
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            while True:
+                try:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # retries for ~10 s, then raises
+                    break
+                except OSError:
+                    continue
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        f.close()

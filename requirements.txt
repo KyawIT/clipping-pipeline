@@ -4,6 +4,8 @@ numpy
 pyyaml
 # OpenCV 5 dropped the bundled face detector files, so stay on 4.x
 opencv-python-headless>=4.8,<5
+# live streams (python clip.py live): records the stream, filters Twitch ads
+streamlink>=6.0
 # web app (python clip.py web)
 fastapi>=0.110
 uvicorn>=0.29

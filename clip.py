@@ -9,6 +9,9 @@
   python clip.py layout-save   <job> --cam x,y,w,h [--game x,y,w,h]  save the streamer's layout preset
   python clip.py validate <job>                                   check clips.json
   python clip.py render   <job> [--only clip_01,clip_03] [--thumbs]  render the 9:16 clips + thumbnails
+  python clip.py delete   <job> [--clip clip_03] [--keep-clips] [--yes]  delete a clip / free space / the job (permanent)
+  python clip.py live     <url-or-job> [--audio] [--quality 720p]  record + transcribe a live stream as it runs
+  python clip.py candidates <job> --from 1:00:00 [--to 1:45:00]  candidates.md for one window (live pick rounds)
   python clip.py web [--port 8765]                                local web app: paste links, progress, library
 """
 from __future__ import annotations
@@ -122,6 +125,66 @@ def cmd_web(a):
     uvicorn.run("web.server:app", host="127.0.0.1", port=a.port, log_level="warning")
 
 
+def _human(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def cmd_delete(a):
+    """Permanent deletes, the same functions the web app uses. The library DB is resynced on the next web start."""
+    from web import cleanup
+    try:
+        jd = cleanup.safe_job_dir(a.job)
+    except cleanup.Refused as e:
+        sys.exit(str(e))
+    if not jd.exists():
+        sys.exit(f"Job not found: {jd}")
+    u = cleanup.usage(jd)
+    if a.clip:
+        what = f"clip {a.clip} of {a.job} (mp4, thumbnail, text, props, cached interval)"
+    elif a.keep_clips:
+        what = f"the working files of {a.job} ({_human(u['working'] + u['archive'])}); the clips stay"
+    else:
+        what = f"the whole job {a.job} ({_human(u['total'])}, including {_human(u['clips'])} of clips)"
+    if not a.yes:
+        ans = input(f"Permanently delete {what}? This can't be undone. [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            sys.exit("Nothing deleted.")
+    if a.clip:
+        res = cleanup.delete_clip(jd, a.clip)
+    elif a.keep_clips:
+        res = cleanup.free_space(jd)
+    else:
+        res = cleanup.delete_job(jd)
+    log(f"Freed {_human(res['freed'])}")
+    if res["failed"]:
+        log("Could not delete (in use?): " + ", ".join(res["failed"]))
+        sys.exit(1)
+    if not a.clip and not a.keep_clips:
+        db = jobs_dir() / "library.db"
+        if db.exists():
+            from web.db import DB
+            d = DB(db)
+            meta_rows = d.q("SELECT pk FROM videos WHERE job_id=?", (a.job,))
+            for r in meta_rows:
+                d.delete_video(r["pk"])
+            for r in d.runs_for(a.job, None, None):
+                d.delete_run(r["pk"])
+
+
+def cmd_live(a):
+    from pipeline.live import run_live
+    run_live(a.source, audio=a.audio, quality=a.quality, game_mode=not a.no_game_mode)
+
+
+def cmd_candidates(a):
+    from pipeline.signals import build_candidates
+    build_candidates(job_dir(a.job), window=(parse_ts(a.from_), parse_ts(a.to) if a.to else None))
+
+
 def cmd_list(_a):
     for p in sorted(jobs_dir().iterdir()):
         if (p / "meta.json").exists():
@@ -140,7 +203,7 @@ def _utf8_output() -> None:
 
 def main():
     _utf8_output()
-    ap =argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("prepare"); p.add_argument("source"); p.add_argument("--mode", choices=["stream", "podcast"])
@@ -158,6 +221,17 @@ def main():
     p = sub.add_parser("validate"); p.add_argument("job"); p.set_defaults(fn=cmd_validate)
     p = sub.add_parser("render"); p.add_argument("job"); p.add_argument("--only")
     p.add_argument("--thumbs", action="store_true", help="only (re)render thumbnails"); p.set_defaults(fn=cmd_render)
+    p = sub.add_parser("delete", help="permanently delete a clip, a job's working files or the whole job")
+    p.add_argument("job"); p.add_argument("--clip"); p.add_argument("--keep-clips", action="store_true")
+    p.add_argument("--yes", action="store_true"); p.set_defaults(fn=cmd_delete)
+    p = sub.add_parser("live", help="record + transcribe a live stream while it runs")
+    p.add_argument("source", help="live stream URL, or an existing live job to resume")
+    p.add_argument("--audio", action="store_true", help="audio only (video comes from the VOD later)")
+    p.add_argument("--quality", choices=["1080p", "720p", "480p"])
+    p.add_argument("--no-game-mode", action="store_true"); p.set_defaults(fn=cmd_live)
+    p = sub.add_parser("candidates", help="rewrite candidates.md for one time window")
+    p.add_argument("job"); p.add_argument("--from", dest="from_", required=True); p.add_argument("--to")
+    p.set_defaults(fn=cmd_candidates)
     p = sub.add_parser("web", help="local web app (paste links, progress, library)")
     p.add_argument("--port", type=int, default=8765); p.add_argument("--no-browser", action="store_true")
     p.set_defaults(fn=cmd_web)

@@ -28,6 +28,15 @@ choosing moments, setting exact cut points, writing hooks and titles. The main e
   `stream.json` (online video, the default: `download.video: sections`) or `source.mp4` (local files / `full`).
   `pipeline/media.py` hides the difference: frames and clip intervals (`segments/`, cached) are fetched from
   the stream only when needed, so every `frames` / `layout-detect` call is a small network fetch.
+- Live jobs (`jobs/<platform>_live_<id>/`, meta `live: true`): `pipeline/live.py` (`clip.py live`) records with
+  streamlink into `rec/*.ts` + `rec/segments.json` (parts = restarts / quality switches; `kind: av|audio`),
+  logs chat to `chat_live.jsonl`, and every `live.chunk_min` appends to `audio.wav`, merges a chunk into
+  `transcript.json` and rescores. `audio.wav`'s length is how far processing got. `media.py` cuts clips from `rec/`,
+  or from the VOD (offset aligned by audio cross-correlation) for audio-only stretches. In the web app `web/live.py`
+  supervises it and queues pick rounds: `clip.py candidates <job> --from --to` writes a window-only candidates.md,
+  and Claude appends clips (never edits existing ones). Control files: `rec/control.json` (audio/quality/game mode),
+  `rec/stop`. Test offline with `CLIP_FAKE_LIVE=<file.mp4>` (+ `CLIP_LIVE_SEGMENT_SEC`, `CLIP_LIVE_CHUNK_MIN`).
+- Deleting (`web/cleanup.py`, `clip.py delete`) is permanent and refuses anything outside `jobs/` or with an active run.
 - `layouts/<platform>_<channel>.json`: saved webcam presets, reused for every stream of that channel
 - Always use the venv: `.venv/bin/python clip.py ...` (Linux/macOS) or `.venv/Scripts/python.exe clip.py ...` (Windows)
 - Setup / one-shot launchers: `setup.sh` + `clip.sh` (Linux), `setup.cmd` + `clip.cmd` (Windows, wrapping the `.ps1` files).

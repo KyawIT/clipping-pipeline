@@ -133,7 +133,22 @@ def pick_peaks(score: np.ndarray, count: int, min_gap: int) -> list[int]:
 
 # ---------------------------------------------------------------- main step
 
-def build_candidates(jd: Path) -> Path:
+def _existing_clips(jd: Path) -> list[tuple[str, float, float]]:
+    from .common import parse_ts
+    f = jd / "clips.json"
+    if not f.exists():
+        return []
+    data = read_json(f)
+    clips = data["clips"] if isinstance(data, dict) else data
+    return [(c.get("id") or f"clip_{i:02d}", parse_ts(c["start"]), parse_ts(c["end"])) for i, c in enumerate(clips, 1)]
+
+
+def build_candidates(jd: Path, window: tuple[float, float | None] | None = None, write_md: bool = True) -> Path:
+    """Score the whole video and write candidates.md / candidates.json.
+
+    With `window=(from, to)` (live pick rounds) the scores are still normalized over the whole stream, but only
+    peaks inside the window that don't overlap an existing clip are listed, and candidates.json (the full list the
+    web app draws) is left alone."""
     meta = read_json(jd / "meta.json")
     tr = read_json(jd / "transcript.json")
     n_sec = int(np.ceil(meta["duration"])) + 1
@@ -161,7 +176,17 @@ def build_candidates(jd: Path) -> Path:
     combined = smooth(combined, 9)
     log(f"Signals ready (chat messages: {len(msgs)}, words: {len(tr['words'])})")
 
-    peaks = pick_peaks(combined, int(cc["count"]), int(cc["min_gap_sec"]))
+    existing = _existing_clips(jd) if window else []
+    if window:
+        lo, hi = int(max(0, window[0])), int(min(n_sec, window[1] if window[1] is not None else n_sec))
+        masked = np.full_like(combined, -1e9)
+        masked[lo:hi] = combined[lo:hi]
+        for _, s, e in existing:  # never offer a moment that is already a clip
+            masked[max(0, int(s) - 20): int(e) + 20] = -1e9
+        count = int(CFG.get("live", {}).get("round_candidates", 10))
+        peaks = [p for p in pick_peaks(masked, count, int(cc["min_gap_sec"])) if masked[p] > -1e8]
+    else:
+        peaks = pick_peaks(combined, int(cc["count"]), int(cc["min_gap_sec"]))
     baseline_rate = float(np.mean(rate[rate > 0])) if has_chat and np.any(rate > 0) else 0.0
 
     cands = []
@@ -182,10 +207,25 @@ def build_candidates(jd: Path) -> Path:
         "has_chat": has_chat, "chat_lag_sec": lag,
         "combined": [round(float(v), 2) for v in combined],
     })
-    write_json(jd / "candidates.json", cands)
     md = jd / "candidates.md"
-    md.write_text(_render_md(meta, tr, cands, has_chat), encoding="utf-8")
-    log(f"Wrote {len(cands)} candidates -> {md}")
+    text = _render_md(meta, tr, cands, has_chat)
+    if window:
+        head = [f"**Live pick round: window {fmt_ts(window[0])} - {fmt_ts(window[1] if window[1] is not None else meta['duration'])}.** "
+                "Only these candidates are new. Keep every clip already in clips.json exactly as it is and only "
+                "append new ones."]
+        if existing:
+            head.append("Existing clips (don't overlap): " + ", ".join(f"{cid} {fmt_ts(s)}-{fmt_ts(e)}"
+                                                                        for cid, s, e in existing))
+        if not cands:
+            head.append("No new candidates in this window: add no clips.")
+        title, rest = text.split("\n", 1)
+        text = title + "\n" + "\n".join(head) + "\n" + rest
+        write_json(jd / "candidates_window.json", cands)
+    else:
+        write_json(jd / "candidates.json", cands)
+    if write_md:  # live jobs rescore every chunk without touching the candidates.md a pick round may be reading
+        md.write_text(text, encoding="utf-8")
+    log(f"Wrote {len(cands)} candidates" + (f" -> {md}" if write_md else ""))
     progress("score", 100, f"{len(cands)} hot moments found", candidates=len(cands), has_chat=has_chat)
     return md
 

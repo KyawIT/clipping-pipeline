@@ -33,6 +33,19 @@
     <button class="close icon-btn" aria-label="Close preview"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     <div class="sheet"><video controls playsinline></video></div>
   </dialog>
+  <dialog id="confirm" class="confirm" aria-labelledby="confirmTitle">
+    <form method="dialog" class="confirm-sheet">
+      <span class="confirm-icon" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2M6.5 7l.8 12a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8l.8-12"/></svg></span>
+      <h2 id="confirmTitle" class="t-headline"></h2>
+      <p class="confirm-body"></p>
+      <ul class="confirm-list"></ul>
+      <p class="confirm-warn">This can't be undone.</p>
+      <div class="confirm-actions">
+        <button class="btn" value="cancel" autofocus>Cancel</button>
+        <button class="btn destructive" value="ok" id="confirmOk">Delete</button>
+      </div>
+    </form>
+  </dialog>
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 
   <script src="/static/app.js"></script>

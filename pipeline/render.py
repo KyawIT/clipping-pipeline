@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .common import CFG, ROOT, SETUP_HINT, fmt_ts, link_or_copy, log, parse_ts, progress, read_json, write_json
+from .common import (CFG, ROOT, SETUP_HINT, ffprobe, fmt_ts, link_or_copy, log, parse_ts, progress, read_json,
+                     write_json)
 from . import media, panels, vision
 
 LAYOUTS = {"split", "fullcam", "fullgame", "podcast_follow", "podcast_stack", "center"}
@@ -225,10 +226,14 @@ def render(jd: Path, job_id: str, only: list[str] | None = None, thumbs_only: bo
         s, e = parse_ts(clip["start"]), parse_ts(clip["end"])
         log(f"Rendering {cid}: {fmt_ts(s)} - {fmt_ts(e)} [{clip.get('layout')}]")
         step = lambda name, msg: progress("render", clip=cid, i=n, n=len(todo), step=name, msg=msg)
-        step("fetch", "Fetching the clip from the stream" if not media.local_source(jd) else "Cutting the clip")
+        cut_local = media.local_source(jd) or (meta.get("live") and media._rec_piece_covered(jd, s, e))
+        step("fetch", "Cutting the clip" if cut_local else "Fetching the clip from the stream")
         public_rel = f"jobs/{job_id}/{cid}.mp4"
         # only this interval is fetched (from the stream, or cut from source.mp4), then cached for re-renders
         seg_file = media.segment(jd, s, e, r["fps"])
+        if meta.get("live"):  # quality can change mid-stream (or come from the VOD): use this clip's own size
+            probed = ffprobe(seg_file)
+            meta = {**meta, **{k: probed[k] for k in ("width", "height") if probed.get(k)}}
         seg = REMOTION / "public" / public_rel
         seg.parent.mkdir(parents=True, exist_ok=True)
         seg.unlink(missing_ok=True)

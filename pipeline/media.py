@@ -18,6 +18,34 @@ from .common import ffmpeg_headers, fmt_ts, log, read_json, run, write_json
 # YouTube stream URLs expire after ~6 h; resolve again well before that (and always after a failed fetch).
 STREAM_TTL_SEC = 3600
 
+# ffmpeg over HTTP waits forever by default when the server stops sending mid-file (YouTube does this now and
+# then). A read that stalls 30 s errors out; ffmpeg then reconnects and resumes at the same byte offset, and
+# when that keeps failing it exits so _with_stream can retry with freshly resolved URLs.
+HTTP_INPUT_OPTS = ["-rw_timeout", "30000000", "-reconnect", "1", "-reconnect_streamed", "1",
+                   "-reconnect_on_network_error", "1", "-reconnect_delay_max", "10", "-reconnect_max_retries", "5"]
+FRAME_TIMEOUT_SEC = 180
+# ffmpeg's own retry counter resets after every successful reconnect, so a server that accepts each reconnect
+# and stalls again keeps it looping forever. Watch the output file instead: no growth for this long = stuck.
+STALL_SEC = 120
+
+
+def _run_watched(cmd: list[str], out: Path) -> None:
+    """subprocess.run(cmd, check=True), but kill ffmpeg (-> TimeoutExpired) once `out` stops growing."""
+    proc = subprocess.Popen(cmd)
+    size, last_change = -1, time.monotonic()
+    while proc.poll() is None:
+        time.sleep(2)
+        now = out.stat().st_size if out.exists() else 0
+        if now != size:
+            size, last_change = now, time.monotonic()
+        elif time.monotonic() - last_change > STALL_SEC:
+            proc.kill()
+            proc.wait()
+            log(f"  the download stalled ({STALL_SEC} s without new data), giving up on these URLs")
+            raise subprocess.TimeoutExpired(cmd, STALL_SEC)
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+
 
 def local_source(jd: Path) -> Path | None:
     p = jd / "source.mp4"
@@ -25,7 +53,7 @@ def local_source(jd: Path) -> Path | None:
 
 
 def has_video(jd: Path) -> bool:
-    return local_source(jd) is not None or (jd / "stream.json").exists()
+    return local_source(jd) is not None or (jd / "stream.json").exists() or (jd / "rec" / "segments.json").exists()
 
 
 def stream_info(jd: Path, refresh: bool = False) -> dict:
@@ -36,9 +64,82 @@ def stream_info(jd: Path, refresh: bool = False) -> dict:
             return st
     from .download import resolve_stream  # lazy: download pulls in yt-dlp helpers
     log("Resolving stream URLs" + (" again" if refresh else ""))
-    st = resolve_stream(read_json(jd / "meta.json")["source"])
+    meta = read_json(jd / "meta.json")
+    if meta.get("live"):
+        if not meta.get("vod_url"):
+            raise RuntimeError("This part of the live stream was recorded as audio only and no VOD was found yet. "
+                               "Try again once the platform has the VOD (Twitch: right away, YouTube / Kick: after "
+                               "the stream ends).")
+        url = meta["vod_url"]
+    else:
+        url = meta["source"]
+    st = resolve_stream(url)
     write_json(p, st)
     return st
+
+
+# ------------------------------------------------------------------ live recordings (jobs/<job>/rec/)
+
+def rec_segments(jd: Path) -> list[dict]:
+    p = jd / "rec" / "segments.json"
+    return read_json(p)["segments"] if p.exists() else []
+
+
+def _vod_offset(jd: Path, t: float) -> float:
+    """Live jobs: VOD time = recording time + offset, measured near `t` (0 for normal jobs)."""
+    if not read_json(jd / "meta.json").get("live"):
+        return 0.0
+    from .live import vod_offset_at  # lazy: only audio-only live stretches need it
+    return vod_offset_at(jd, t)
+
+
+def _rec_piece_covered(jd: Path, start: float, end: float) -> bool:
+    """Whether [start, end] is fully in the local recording with video (no file is written)."""
+    segs = rec_segments(jd)
+    pick = [s for s in segs if s["end"] > max(0.0, start - 1.0) and s["start"] < end + 1.0]
+    return bool(pick) and all(s.get("kind") == "av" for s in pick) and pick[0]["start"] <= start + 0.05 \
+        and pick[-1]["end"] >= end - 0.05
+
+
+def _rec_piece(jd: Path, start: float, end: float) -> tuple[Path, float] | None:
+    """The recorded segments covering [start - 1, end + 1] as one local file -> (file, source time at its start).
+    None if that range isn't fully recorded with video (audio-only stretches, gaps, not recorded yet)."""
+    segs = rec_segments(jd)
+    lo, hi = max(0.0, start - 1.0), end + 1.0
+    pick = [s for s in segs if s["end"] > lo and s["start"] < hi]
+    if not pick or any(s.get("kind") != "av" for s in pick):
+        return None
+    if pick[0]["start"] > start + 0.05 or pick[-1]["end"] < end - 0.05:
+        return None
+    if any(b["start"] - a["end"] > 0.5 for a, b in zip(pick, pick[1:])):
+        return None  # a reconnect gap inside the clip
+    rec = jd / "rec"
+    if len(pick) == 1:
+        return rec / pick[0]["file"], pick[0]["start"]
+    out = jd / "segments" / f"rec_{start:.2f}_{end:.2f}.ts"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sizes = {(s.get("width"), s.get("height")) for s in pick}
+    if len(sizes) > 1:
+        # the quality was switched inside this clip: re-encode the pieces to the larger size (stream copy can't mix)
+        w, h = max(sizes, key=lambda wh: (wh[0] or 0) * (wh[1] or 0))
+        inputs, chains = [], []
+        for i, s in enumerate(pick):
+            inputs += ["-i", str(rec / s["file"])]
+            chains.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
+                          f"setsar=1,fps=30[v{i}];[{i}:a]aresample=48000[a{i}]")
+        joined = "".join(f"[v{i}][a{i}]" for i in range(len(pick)))
+        out = out.with_suffix(".mp4")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *inputs, "-filter_complex",
+                        ";".join(chains) + f";{joined}concat=n={len(pick)}:v=1:a=1[v][a]", "-map", "[v]", "-map", "[a]",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-c:a", "aac", "-b:a", "256k", str(out)],
+                       check=True)
+        return out, pick[0]["start"]
+    lst = out.with_suffix(".txt")
+    lst.write_text("".join(f"file '{(rec / s['file']).resolve().as_posix()}'\n" for s in pick), encoding="utf-8")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(lst),
+                    "-c", "copy", str(out)], check=True)
+    lst.unlink(missing_ok=True)
+    return out, pick[0]["start"]
 
 
 def _is_hls(fmt: dict) -> bool:
@@ -54,14 +155,14 @@ def _remote_input(jd: Path, fmt: dict, start: float, end: float) -> list[str]:
     if _is_hls(fmt):
         piece, piece_start = _hls_piece(jd, fmt, start, end)
         return ["-ss", f"{max(0.0, start - piece_start):.3f}", "-i", str(piece)]
-    return ["-ss", f"{start:.3f}", *ffmpeg_headers(fmt.get("headers")), "-i", fmt["url"]]
+    return ["-ss", f"{start:.3f}", *HTTP_INPUT_OPTS, *ffmpeg_headers(fmt.get("headers")), "-i", fmt["url"]]
 
 
 def _with_stream(jd: Path, fetch):
-    """fetch(stream) reads from the stream; on failure resolve fresh URLs once and retry."""
+    """fetch(stream) reads from the stream; on failure (or a hang) resolve fresh URLs once and retry."""
     try:
         return fetch(stream_info(jd))
-    except (subprocess.CalledProcessError, OSError) as e:  # OSError covers urllib's URLError / HTTPError
+    except (subprocess.SubprocessError, OSError) as e:  # failed / timed out ffmpeg; urllib's URLError / HTTPError
         log(f"Stream fetch failed ({e.__class__.__name__}), the URLs may have expired")
         return fetch(stream_info(jd, refresh=True))
 
@@ -156,7 +257,8 @@ def _hls_piece(jd: Path, fmt: dict, start: float, end: float) -> tuple[Path, flo
 def _png(inputs: list[str], width: int | None) -> bytes:
     vf = ["-vf", f"scale={width}:-2"] if width else []
     return subprocess.run(["ffmpeg", "-v", "error", *inputs, "-frames:v", "1", *vf,
-                           "-f", "image2pipe", "-vcodec", "png", "-"], check=True, capture_output=True).stdout
+                           "-f", "image2pipe", "-vcodec", "png", "-"], check=True, capture_output=True,
+                          timeout=FRAME_TIMEOUT_SEC).stdout
 
 
 def frame_png(src: Path, t: float, width: int | None = None) -> bytes:
@@ -167,14 +269,19 @@ def frame_png(src: Path, t: float, width: int | None = None) -> bytes:
     if local:
         return _png(["-ss", f"{t:.3f}", "-i", str(local)], width)
     try:
-        return _with_stream(src, lambda st: _png(_remote_input(src, st["video"], t, t + 0.5), width))
+        rec = _rec_piece(src, t, t + 0.5)
+        if rec:
+            return _png(["-ss", f"{max(0.0, t - rec[1]):.3f}", "-i", str(rec[0])], width)
+        off = _vod_offset(src, t)
+        return _with_stream(src, lambda st: _png(_remote_input(src, st["video"], t + off, t + off + 0.5), width))
     finally:
         _clean_pieces(src)
 
 
 def _clean_pieces(jd: Path) -> None:
-    for p in (jd / "segments").glob("hls_*"):
-        p.unlink(missing_ok=True)
+    for pattern in ("hls_*", "rec_*"):
+        for p in (jd / "segments").glob(pattern):
+            p.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------------ clip intervals
@@ -192,16 +299,26 @@ def segment(jd: Path, start: float, end: float, fps: int) -> Path:
               "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", str(tmp)]
 
     local = local_source(jd)
+    rec = None if local else _rec_piece(jd, start, end)
     if local:
         run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", local, *encode])
+    elif rec:
+        try:
+            run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, start - rec[1]):.3f}", "-i", rec[0], *encode])
+        finally:
+            _clean_pieces(jd)
     else:
+        off = _vod_offset(jd, start)  # live jobs recorded as audio only: the picture comes from the VOD
+
         def fetch(st: dict) -> None:
             video, audio = st["video"], st.get("audio")
-            log(f"  fetching {fmt_ts(start)} - {fmt_ts(end)} ({end - start:.1f}s) from the stream")
-            inputs = _remote_input(jd, video, start, end) + (_remote_input(jd, audio, start, end) if audio else [])
+            a, b = start + off, end + off
+            log(f"  fetching {fmt_ts(start)} - {fmt_ts(end)} ({end - start:.1f}s) from the "
+                + ("VOD" if off else "stream"))
+            inputs = _remote_input(jd, video, a, b) + (_remote_input(jd, audio, a, b) if audio else [])
             maps = ["-map", "0:v:0", "-map", "1:a:0" if audio else "0:a:0?"]
             # not via run(): the signed URLs would flood the log
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *inputs, *maps, *encode], check=True)
+            _run_watched(["ffmpeg", "-y", "-loglevel", "error", *inputs, *maps, *encode], tmp)
         try:
             _with_stream(jd, fetch)
         finally:

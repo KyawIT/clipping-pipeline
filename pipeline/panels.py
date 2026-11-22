@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import upscale
-from .common import CFG, log
+from .common import CFG, gpu_lock, log
 
 FULL = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 # Real-ESRGAN (when enabled) is for small regions blown up a lot: the webcam box, a fullcam crop. Big crops such as
@@ -131,7 +131,8 @@ def build(seg_file: Path, props: dict, out_dir: Path, prefix: str, public_root: 
         crop = None if "follow" in spec else _cover_rect(spec["box"], sw, sh, spec["w"], spec["h"])
         if ai and crop and spec["w"] / crop[2] >= AI_MIN_UPSCALE and crop[2] * crop[3] <= AI_MAX_INPUT_PX:
             x, y, w, h = (int(round(v)) for v in crop)
-            upscale.render_panel(seg_file, (x, y, w, h), spec["w"], spec["h"], out, props["fps"], until)
+            with gpu_lock(ai == "cuda"):  # never at the same time as a WhisperX run (live transcription)
+                upscale.render_panel(seg_file, (x, y, w, h), spec["w"], spec["h"], out, props["fps"], until)
             notes.append(f"{role} {spec['w']}x{spec['h']} (AI x{spec['w'] / w:.1f})")
         else:
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(seg_file),

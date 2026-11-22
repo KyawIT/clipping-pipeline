@@ -58,6 +58,10 @@ On Windows, if Bash is not available, poll with `Start-Sleep 60` instead of `sle
    layouts: `split` (cam top / gameplay bottom, the default for streams), `fullcam` (big reaction or just chatting),
    `fullgame` (the play itself is the clip; cam bubble), `podcast_follow`, `podcast_stack` (two people), `center`.
 
+   **Live pick rounds** (candidates.md starts with "Live pick round: window ..."): keep every clip already in
+   clips.json unchanged, only append new ones (ids continue the numbering), never overlap the listed existing clips,
+   and append none if nothing in the window is good.
+
 6. **Validate** with `{py} clip.py validate <job>` and fix anything it reports.
 
 7. **Show the user a short table** (id, time, length, layout, hook, why) and ask whether to render all of them or
